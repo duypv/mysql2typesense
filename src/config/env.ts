@@ -3,7 +3,7 @@ import "dotenv/config";
 import { z } from "zod";
 
 import type { AppConfig } from "../core/types.js";
-import { loadTableSyncConfig } from "./sync-config.js";
+import { loadSyncConfig } from "./sync-config.js";
 
 const envSchema = z.object({
   DB_HOST: z.string().min(1),
@@ -35,7 +35,7 @@ const envSchema = z.object({
 
 export function loadConfig(): AppConfig {
   const env = envSchema.parse(process.env);
-  const tables = loadTableSyncConfig(env.SYNC_CONFIG_PATH);
+  const syncConfig = loadSyncConfig(env.SYNC_CONFIG_PATH);
 
   return {
     mysql: {
@@ -47,7 +47,8 @@ export function loadConfig(): AppConfig {
     },
     sync: {
       batchSize: env.SYNC_BATCH_SIZE,
-      tables,
+      database: syncConfig.database,
+      tables: syncConfig.tables,
       retry: {
         maxAttempts: env.RETRY_MAX_ATTEMPTS,
         baseDelayMs: env.RETRY_BASE_DELAY_MS

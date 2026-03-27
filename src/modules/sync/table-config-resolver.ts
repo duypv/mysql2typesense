@@ -1,4 +1,4 @@
-import type { TableSyncConfig, TableSyncConfigSeed, TypesenseFieldConfig } from "../../core/types.js";
+import type { DatabaseSyncConfig, TableSyncConfig, TableSyncConfigSeed, TypesenseFieldConfig } from "../../core/types.js";
 import { MysqlSchemaIntrospector } from "../mysql/schema-introspector.js";
 
 function mergeTypesenseFields(
@@ -18,30 +18,49 @@ function mergeTypesenseFields(
 }
 
 function inferDefaultSortingField(fields: TypesenseFieldConfig[]): string | undefined {
-  const candidate = fields.find((field) => field.sort && (field.type === "int64" || field.type === "int32"));
-  return candidate?.name;
+  const sortableNumeric = fields.filter(
+    (field) => field.name !== "id" && (field.type === "int64" || field.type === "int32" || field.type === "float")
+  );
+
+  const preferred = sortableNumeric.find((field) => field.name === "updated_at_ts" || field.name === "created_at_ts");
+  if (preferred) {
+    return preferred.name;
+  }
+
+  const explicitSort = sortableNumeric.find((field) => field.sort);
+  if (explicitSort) {
+    return explicitSort.name;
+  }
+
+  return sortableNumeric[0]?.name;
 }
 
 export async function resolveTableConfigs(
   introspector: MysqlSchemaIntrospector,
   defaultDatabase: string,
-  seeds: TableSyncConfigSeed[]
+  seeds: TableSyncConfigSeed[],
+  databaseConfig?: DatabaseSyncConfig
 ): Promise<TableSyncConfig[]> {
+  const resolvedDefaultDatabase = databaseConfig?.name ?? defaultDatabase;
+  const excludedFieldNames = new Set((databaseConfig?.excludeFields ?? []).map((name) => name.toLowerCase()));
+
   const effectiveSeeds: TableSyncConfigSeed[] =
     seeds.length > 0
       ? seeds
-      : (await introspector.listTables(defaultDatabase)).map((table) => ({
+      : (await introspector.listTables(resolvedDefaultDatabase)).map((table) => ({
           table,
-          database: defaultDatabase
+          database: resolvedDefaultDatabase
         }));
 
   const resolved: TableSyncConfig[] = [];
 
   for (const seed of effectiveSeeds) {
-    const database = seed.database ?? defaultDatabase;
+    const database = seed.database ?? resolvedDefaultDatabase;
     const table = seed.table;
     const collection = seed.collection ?? table;
-    const columns = await introspector.getColumns(database, table);
+    const columns = (await introspector.getColumns(database, table)).filter(
+      (column) => !excludedFieldNames.has(column.name.toLowerCase())
+    );
 
     if (columns.length === 0) {
       continue;
@@ -53,7 +72,11 @@ export async function resolveTableConfigs(
     const configuredMappings = seed.transform?.fieldMappings;
     const fieldMappings =
       configuredMappings && configuredMappings.length > 0
-        ? configuredMappings
+        ? configuredMappings.filter(
+            (mapping) =>
+              !excludedFieldNames.has(mapping.source.toLowerCase()) &&
+              !excludedFieldNames.has(mapping.target.toLowerCase())
+          )
         : columns.map((column) => {
             const inferred = introspector.inferTypesenseType(column.mysqlType);
             return {
@@ -66,7 +89,9 @@ export async function resolveTableConfigs(
             };
           });
 
-    const configuredFields = seed.typesense?.fields;
+    const configuredFields = seed.typesense?.fields?.filter(
+      (field) => !excludedFieldNames.has(field.name.toLowerCase())
+    );
     let fields: TypesenseFieldConfig[];
 
     if (configuredFields && configuredFields.length > 0) {
@@ -74,7 +99,7 @@ export async function resolveTableConfigs(
       const mappingTargets = new Set(fieldMappings.map((m) => m.target));
       const configuredNames = new Set(configuredFields.map((f) => f.name));
 
-      fields = configuredFields;
+      fields = [...configuredFields];
 
       // Add any target fields from mappings that are not already in configured fields.
       for (const mapping of fieldMappings) {
@@ -94,7 +119,7 @@ export async function resolveTableConfigs(
           name: column.name,
           type: inferredType.type,
           optional: column.nullable || undefined,
-          sort: column.name === primaryKey ? true : undefined
+          sort: column.name === primaryKey && column.name !== "id" ? true : undefined
         };
       });
       fields = mergeTypesenseFields(inferredFields, undefined);

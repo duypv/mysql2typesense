@@ -80,7 +80,13 @@ export interface TableSyncConfig {
   transform: TableTransformConfig;
 }
 
+export interface DatabaseSyncConfig {
+  name: string;
+  excludeFields?: string[];
+}
+
 export interface SyncConfigFile {
+  database?: DatabaseSyncConfig;
   tables?: TableSyncConfigSeed[];
 }
 
@@ -119,6 +125,7 @@ export interface AppConfig {
   };
   sync: {
     batchSize: number;
+    database?: DatabaseSyncConfig;
     tables: TableSyncConfigSeed[];
     retry: RetryConfig;
   };

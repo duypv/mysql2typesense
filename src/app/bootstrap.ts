@@ -47,7 +47,12 @@ export async function bootstrap(): Promise<AppContext> {
   const mysqlPool = createMysqlPool(config);
   const sourceReader = new MySqlSourceReader(mysqlPool);
   const introspector = new MysqlSchemaIntrospector(mysqlPool);
-  const resolvedTables = await resolveTableConfigs(introspector, config.mysql.database, config.sync.tables);
+  const resolvedTables = await resolveTableConfigs(
+    introspector,
+    config.mysql.database,
+    config.sync.tables,
+    config.sync.database
+  );
   const monitor = new InMemorySyncMonitor();
   monitor.setTables(resolvedTables);
 

@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 import { z } from "zod";
 
-import type { SyncConfigFile, TableSyncConfigSeed } from "../core/types.js";
+import type { DatabaseSyncConfig, SyncConfigFile, TableSyncConfigSeed } from "../core/types.js";
 
 const typesenseFieldTypeSchema = z.enum([
   "string",
@@ -76,20 +76,34 @@ const tableSchema = z.object({
 });
 
 const syncConfigSchema = z.object({
+  database: z
+    .object({
+      name: z.string().min(1),
+      excludeFields: z.array(z.string().min(1)).optional()
+    })
+    .optional(),
   tables: z.array(tableSchema).optional()
 });
 
-export function loadTableSyncConfig(configPath: string): TableSyncConfigSeed[] {
+export interface LoadedSyncConfig {
+  database?: DatabaseSyncConfig;
+  tables: TableSyncConfigSeed[];
+}
+
+export function loadSyncConfig(configPath: string): LoadedSyncConfig {
   try {
     const absolutePath = resolve(configPath);
     const content = readFileSync(absolutePath, "utf8");
     const parsed = JSON.parse(content) as SyncConfigFile;
     const result = syncConfigSchema.parse(parsed);
-    return result.tables ?? [];
+    return {
+      database: result.database,
+      tables: result.tables ?? []
+    };
   } catch (error) {
     const nodeError = error as NodeJS.ErrnoException;
     if (nodeError.code === "ENOENT") {
-      return [];
+      return { tables: [] };
     }
 
     throw error;
