@@ -1,0 +1,32 @@
+{
+  "name": "mysql2typesense",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Realtime CDC sync service from MySQL to Typesense.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "sync:bootstrap": "tsx src/app/bootstrap-sync.ts",
+    "dev:initial": "tsx src/app/initial-sync.ts",
+    "dev:realtime": "tsx src/app/realtime-sync.ts",
+    "sync:initial": "tsx src/app/initial-sync.ts",
+    "sync:realtime": "tsx src/app/realtime-sync.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "mysql2": "^3.14.0",
+    "pino": "^9.7.0",
+    "redis": "^4.7.0",
+    "typesense": "^2.0.0-8",
+    "zod": "^3.24.2",
+    "zongji": "^0.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}

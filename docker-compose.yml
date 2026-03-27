@@ -1,0 +1,76 @@
+services:
+  mysql:
+    image: mysql:8.0
+    command:
+      - --server-id=1
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: app
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -proot --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  typesense:
+    image: typesense/typesense:26.0
+    command:
+      - --data-dir=/data
+      - --api-key=xyz
+      - --enable-cors
+    ports:
+      - "8108:8108"
+    volumes:
+      - ./typesense-data:/data
+
+  sync-app:
+    build:
+      context: .
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      typesense:
+        condition: service_started
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASS: root
+      DB_NAME: app
+      SYNC_CONFIG_PATH: /app/config/sync.config.json
+      SYNC_BATCH_SIZE: 500
+      TS_NODE_HOST: typesense
+      TS_NODE_PORT: 8108
+      TS_NODE_PROTOCOL: http
+      TS_API_KEY: xyz
+      CHECKPOINT_DRIVER: redis
+      CHECKPOINT_REDIS_KEY: mysql2typesense:binlog
+      REDIS_URL: redis://redis:6379
+      RETRY_MAX_ATTEMPTS: 10
+      RETRY_BASE_DELAY_MS: 1000
+      MONITORING_ENABLED: true
+      MONITORING_PORT: 8080
+      LOG_LEVEL: info
+    ports:
+      - "8080:8080"
+    command: ["npm", "run", "sync:bootstrap"]

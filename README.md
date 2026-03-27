@@ -14,6 +14,17 @@ Dịch vụ được thiết kế với kiến trúc **2 chế độ (Dual-Mode)
 1. **Initial Sync (Đồng bộ lần đầu):** Quét toàn bộ dữ liệu hiện có trong MySQL và đẩy lên Typesense theo lô (Bulk Import) cực nhanh, sử dụng Cursor-based pagination để tối ưu RAM.
 2. **Realtime Sync (Đồng bộ thời gian thực):** Lắng nghe MySQL Binlog. Bất kỳ thay đổi nào (Thêm/Sửa/Xóa) dưới database đều được tự động phản ánh lên Typesense chỉ trong vài mili-giây.
 
+### ✅ Các phần đã được triển khai trong code
+
+- Multi-table sync theo file cấu hình `config/sync.config.json`.
+- Mapping schema Typesense theo từng bảng (`typesense.fields`, `defaultSortingField`, `facet`, `sort`).
+- Transform dữ liệu theo rule (`transform.fieldMappings`) với hỗ trợ `csv`, `json`, `datetime`.
+- Checkpoint driver: `file` hoặc `redis`.
+- Fallback tự động: nếu không có config bảng thì sync tất cả bảng; nếu không có config field/mapping thì sync toàn bộ cột của bảng.
+- Healthcheck endpoint + Prometheus metrics endpoint.
+- Dashboard web đơn giản để theo dõi trạng thái sync, thống kê lỗi và quản lý collection Typesense.
+- Docker Compose stack end-to-end: MySQL + Redis + Typesense + Sync service.
+
 ### 📊 So sánh giải pháp: Khi nào nên sử dụng dự án này?
 
 | Tiêu chí | `mysql2typesense` (Project này) | Hệ thống Debezium + Kafka + Connect |
@@ -78,15 +89,27 @@ cp .env.example .env
 DB_HOST=127.0.0.1
 DB_USER=root
 DB_PASS=your_secret_password
-DB_NAME=my_database
-DB_TABLE=users
+DB_NAME=app
+
+# Multi-table Sync Config
+# Neu file khong ton tai hoac tables[] rong, service se auto lay tat ca bang trong DB_NAME
+SYNC_CONFIG_PATH=config/sync.config.json
 
 # Typesense Config
 TS_NODE_HOST=127.0.0.1
 TS_NODE_PORT=8108
 TS_NODE_PROTOCOL=http
 TS_API_KEY=your_typesense_api_key
-TS_COLLECTION=users
+
+# Checkpoint Config
+CHECKPOINT_DRIVER=redis
+REDIS_URL=redis://127.0.0.1:6379
+CHECKPOINT_REDIS_KEY=mysql2typesense:binlog
+
+# Monitoring / Dashboard
+MONITORING_ENABLED=true
+MONITORING_HOST=0.0.0.0
+MONITORING_PORT=8080
 ```
 
 -----
@@ -94,6 +117,31 @@ TS_COLLECTION=users
 ## 🚀 Hướng dẫn sử dụng
 
 Dự án được tách biệt thành 2 script riêng để bạn dễ dàng quản lý thông qua PM2, Docker, hoặc Kubernetes.
+
+### Cấu hình multi-table + mapping
+
+Sửa file `config/sync.config.json` để khai báo nhiều bảng, schema Typesense và mapping transform cho từng bảng.
+
+Trong `.env`, dùng:
+
+```env
+SYNC_CONFIG_PATH=config/sync.config.json
+CHECKPOINT_DRIVER=redis
+REDIS_URL=redis://127.0.0.1:6379
+CHECKPOINT_REDIS_KEY=mysql2typesense:binlog
+MONITORING_PORT=8080
+```
+
+### Healthcheck, Metrics, Dashboard
+
+Khi service đang chạy, bạn có thể dùng:
+
+- `GET /health`: kiểm tra trạng thái sống.
+- `GET /metrics`: metrics dạng Prometheus.
+- `GET /dashboard`: giao diện theo dõi realtime.
+- `GET /api/status`: snapshot trạng thái sync.
+- `GET /api/collections`: danh sách collection Typesense.
+- `DELETE /api/collections/:name`: xóa collection (quản lý cơ bản từ dashboard).
 
 ### Bước 1: Đồng bộ dữ liệu lần đầu (Initial Sync)
 
@@ -115,6 +163,12 @@ npm run sync:realtime
 
 ```bash
 pm2 start npm --name "typesense-realtime" -- run sync:realtime
+```
+
+### Chạy initial + realtime trong một tiến trình
+
+```bash
+npm run sync:bootstrap
 ```
 
 ## Docker
@@ -141,15 +195,25 @@ docker run -d --name mysql2typesense \
   mysql2typesense
 ```
 
+## Docker Compose (khuyến nghị để test end-to-end)
+
+```bash
+docker compose up --build
+```
+
+Stack mẫu đã bao gồm dữ liệu seed ở `docker/mysql/init/001-schema.sql` để bạn test ngay với 2 bảng `users` và `products`.
+
+Dashboard mặc định tại: `http://127.0.0.1:8080/dashboard`
+
 -----
 
 ## 🏗 Roadmap (Dự kiến phát triển)
 
-  - [ ] Hỗ trợ mapping nhiều table (Multi-table sync) cùng lúc.
-  - [ ] Lưu trạng thái Binlog Position vào Redis để phục hồi không mất dữ liệu khi crash (High Availability).
-  - [ ] Thêm giao diện Dashboard đơn giản để theo dõi trạng thái đồng bộ, thống kê lỗi, và quản lý collection trên Typesense.
+  - [x] Hỗ trợ mapping nhiều table (Multi-table sync) cùng lúc.
+  - [x] Lưu trạng thái Binlog Position vào Redis để phục hồi không mất dữ liệu khi crash (High Availability).
+  - [x] Thêm giao diện Dashboard đơn giản để theo dõi trạng thái đồng bộ, thống kê lỗi, và quản lý collection trên Typesense.
   - [ ] Hỗ trợ các database khác ngoài MySQL (PostgreSQL, MongoDB) thông qua plugin architecture.
-  - [ ] Hỗ trợ Data Transformation (cho phép viết custom function để biến đổi dữ liệu trước khi đẩy sang Typesense).
+  - [x] Hỗ trợ Data Transformation (cho phép viết custom function để biến đổi dữ liệu trước khi đẩy sang Typesense).
   - [ ] Đóng gói sẵn thành Docker Image.
   - [ ] Tối ưu hiệu năng cho các trường hợp dữ liệu lớn (Hàng triệu bản ghi) và tần suất thay đổi cao.
   - [ ] Thêm tính năng Retry/Backoff khi gặp lỗi kết nối hoặc lỗi API từ Typesense.

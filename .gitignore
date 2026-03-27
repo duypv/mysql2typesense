@@ -1,0 +1,11 @@
+node_modules
+dist
+.env
+.DS_Store
+storage/checkpoints/*.json
+mysql-data
+typesense-data
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
