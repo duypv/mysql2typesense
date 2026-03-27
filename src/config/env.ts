@@ -27,6 +27,7 @@ const envSchema = z.object({
     .transform((value) => !["0", "false", "no", "off"].includes(value.trim().toLowerCase())),
   MONITORING_HOST: z.string().min(1).default("0.0.0.0"),
   MONITORING_PORT: z.coerce.number().int().positive().default(8080),
+  MONITORING_AUTH_TOKEN: z.string().optional(),
   RETRY_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
   RETRY_BASE_DELAY_MS: z.coerce.number().int().positive().default(500),
   LOG_LEVEL: z.string().default("info")
@@ -67,7 +68,8 @@ export function loadConfig(): AppConfig {
     monitoring: {
       enabled: env.MONITORING_ENABLED,
       host: env.MONITORING_HOST,
-      port: env.MONITORING_PORT
+      port: env.MONITORING_PORT,
+      authToken: env.MONITORING_AUTH_TOKEN
     },
     logLevel: env.LOG_LEVEL
   };

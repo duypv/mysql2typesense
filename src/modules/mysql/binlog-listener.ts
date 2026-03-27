@@ -13,7 +13,7 @@ type RawBinlogEvent = {
   getEventName?: () => string;
   tableMap?: Record<number, { parentSchema?: string; tableName?: string }>;
   tableId?: number;
-  rows?: Array<{ before?: Record<string, unknown>; after?: Record<string, unknown> }>;
+  rows?: Array<Record<string, unknown> | { before?: Record<string, unknown>; after?: Record<string, unknown> }>;
   nextPosition?: number;
   binlogName?: string;
 };
@@ -23,11 +23,15 @@ export class MySqlBinlogListener implements BinlogListener {
   private currentCheckpoint: BinlogCheckpoint | null = null;
   private started = false;
 
+  private logger: any = null;
+
   constructor(
     private readonly config: AppConfig,
     private readonly tables: TableSyncConfig[],
-    private readonly checkpointStore: CheckpointStore
+    private readonly checkpointStore: CheckpointStore,
+    logger?: any
   ) {
+    this.logger = logger;
     this.zongji = new ZongJi({
       host: config.mysql.host,
       port: config.mysql.port,
@@ -45,13 +49,26 @@ export class MySqlBinlogListener implements BinlogListener {
       return accumulator;
     }, {});
 
+    this.logger?.info(
+      { checkpoint: this.currentCheckpoint, includeSchema },
+      "Binlog listener starting"
+    );
+
     await new Promise<void>((resolve, reject) => {
-      const handleError = (error: unknown) => reject(error);
-      const handleReady = () => resolve();
+      const handleError = (error: unknown) => {
+        this.logger?.error({ error }, "Binlog listener error");
+        reject(error);
+      };
+      const handleReady = () => {
+        this.logger?.info("Binlog listener ready, listening for changes");
+        resolve();
+      };
       const handleEvent = async (event: RawBinlogEvent) => {
         try {
+          this.logger?.debug({ eventName: event.getEventName?.() }, "Binlog event received");
           await this.handleEvent(event, onChange);
         } catch (error) {
+          this.logger?.error({ error }, "Error handling binlog event");
           reject(error);
         }
       };
@@ -62,7 +79,7 @@ export class MySqlBinlogListener implements BinlogListener {
 
       this.started = true;
       this.zongji.start({
-        includeEvents: ["writerows", "updaterows", "deleterows"],
+        includeEvents: ["tablemap", "writerows", "updaterows", "deleterows"],
         includeSchema,
         filename: this.currentCheckpoint?.filename,
         position: this.currentCheckpoint?.position
@@ -82,14 +99,19 @@ export class MySqlBinlogListener implements BinlogListener {
     onChange: (event: ChangeEvent) => Promise<void>
   ): Promise<void> {
     const eventName = event.getEventName?.();
+    this.logger?.debug({ eventName, rowsCount: event.rows?.length, tableId: event.tableId }, "Processing binlog event");
     if (!eventName || !event.rows?.length) {
+      this.logger?.debug({ eventName, hasRows: !!event.rows?.length }, "Skipping event (no name or rows)");
       return;
     }
 
     const mappedTable = this.resolveTable(event);
     if (!mappedTable) {
+      this.logger?.debug({ tableId: event.tableId, eventName }, "Skipping event (table not mapped)");
       return;
     }
+
+    this.logger?.debug({ table: mappedTable.table, eventName, rowCount: event.rows.length }, "Applying event to collection");
 
     const checkpoint: BinlogCheckpoint = {
       filename: event.binlogName ?? this.currentCheckpoint?.filename,
@@ -99,21 +121,34 @@ export class MySqlBinlogListener implements BinlogListener {
     this.currentCheckpoint = checkpoint;
 
     for (const row of event.rows) {
+      const normalized =
+        typeof row === "object" && row !== null && ("before" in row || "after" in row)
+          ? (row as { before?: Record<string, unknown>; after?: Record<string, unknown> })
+          : ({
+              before: eventName === "deleterows" ? (row as Record<string, unknown>) : undefined,
+              after: eventName !== "deleterows" ? (row as Record<string, unknown>) : undefined
+            } as { before?: Record<string, unknown>; after?: Record<string, unknown> });
+
       if (eventName === "deleterows") {
         await onChange({
           operation: "delete",
           table: mappedTable,
-          before: row.before,
+          before: normalized.before,
           checkpoint
         });
         continue;
       }
 
+      const mergedAfter = {
+        ...(normalized.before ?? {}),
+        ...(normalized.after ?? {})
+      };
+
       await onChange({
         operation: "upsert",
         table: mappedTable,
-        before: row.before,
-        after: row.after,
+        before: normalized.before,
+        after: mergedAfter,
         checkpoint
       });
     }

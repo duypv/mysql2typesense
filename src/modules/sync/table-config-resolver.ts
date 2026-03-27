@@ -50,21 +50,6 @@ export async function resolveTableConfigs(
     const inferredPrimary = columns.find((column) => column.primary)?.name ?? columns[0].name;
     const primaryKey = seed.primaryKey ?? inferredPrimary;
 
-    const inferredFields: TypesenseFieldConfig[] = columns.map((column) => {
-      const inferredType = introspector.inferTypesenseType(column.mysqlType);
-      return {
-        name: column.name,
-        type: inferredType.type,
-        optional: column.nullable || undefined,
-        sort: column.name === primaryKey ? true : undefined
-      };
-    });
-
-    const fields = mergeTypesenseFields(inferredFields, seed.typesense?.fields as TypesenseFieldConfig[] | undefined);
-    if (!fields.some((field) => field.name === "id")) {
-      fields.unshift({ name: "id", type: "string" });
-    }
-
     const configuredMappings = seed.transform?.fieldMappings;
     const fieldMappings =
       configuredMappings && configuredMappings.length > 0
@@ -80,6 +65,44 @@ export async function resolveTableConfigs(
               timestampResolution: inferred.sourceFormat === "datetime" ? ("seconds" as const) : undefined
             };
           });
+
+    const configuredFields = seed.typesense?.fields;
+    let fields: TypesenseFieldConfig[];
+
+    if (configuredFields && configuredFields.length > 0) {
+      // If configured fields are explicitly provided, use only those + fields referenced in transform mappings.
+      const mappingTargets = new Set(fieldMappings.map((m) => m.target));
+      const configuredNames = new Set(configuredFields.map((f) => f.name));
+
+      fields = configuredFields;
+
+      // Add any target fields from mappings that are not already in configured fields.
+      for (const mapping of fieldMappings) {
+        if (!configuredNames.has(mapping.target) && !fields.some((f) => f.name === mapping.target)) {
+          fields.push({
+            name: mapping.target,
+            type: mapping.type,
+            optional: mapping.optional
+          });
+        }
+      }
+    } else {
+      // No configured fields: infer from all columns.
+      const inferredFields: TypesenseFieldConfig[] = columns.map((column) => {
+        const inferredType = introspector.inferTypesenseType(column.mysqlType);
+        return {
+          name: column.name,
+          type: inferredType.type,
+          optional: column.nullable || undefined,
+          sort: column.name === primaryKey ? true : undefined
+        };
+      });
+      fields = mergeTypesenseFields(inferredFields, undefined);
+    }
+
+    if (!fields.some((field) => field.name === "id")) {
+      fields.unshift({ name: "id", type: "string" });
+    }
 
     resolved.push({
       database,

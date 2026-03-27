@@ -70,6 +70,7 @@ services:
       RETRY_BASE_DELAY_MS: 1000
       MONITORING_ENABLED: true
       MONITORING_PORT: 8080
+      MONITORING_AUTH_TOKEN: changeme
       LOG_LEVEL: info
     ports:
       - "8080:8080"

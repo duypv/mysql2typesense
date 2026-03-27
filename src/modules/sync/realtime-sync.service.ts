@@ -22,6 +22,7 @@ export class RealtimeSyncService {
 
     await this.listener.start(async (event) => {
       const tableKey = `${event.table.database}.${event.table.table}`;
+      this.logger.debug({ tableKey, operation: event.operation }, "Received realtime event from binlog");
 
       try {
         await withRetry(() => this.collectionManager.ensureCollection(event.table), this.retryConfig);

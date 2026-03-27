@@ -56,8 +56,20 @@ export async function bootstrap(): Promise<AppContext> {
   const collectionManager = new TypesenseCollectionManager(typesenseClient);
   const documentIndexer = new TypesenseDocumentIndexer(typesenseClient);
   const transformer = new ConfigDrivenTransformer();
-  const binlogListener = new MySqlBinlogListener(config, resolvedTables, checkpointStore);
+  const binlogListener = new MySqlBinlogListener(config, resolvedTables, checkpointStore, logger);
+  const reindexInFlight = new Set<string>();
   let monitoringServer: Server | null = null;
+
+  const initialSyncService = new InitialSyncService(
+    sourceReader,
+    collectionManager,
+    documentIndexer,
+    transformer,
+    config.sync.batchSize,
+    config.sync.retry,
+    logger,
+    monitor
+  );
 
   if (config.monitoring.enabled) {
     monitoringServer = startMonitoringServer({
@@ -65,7 +77,31 @@ export async function bootstrap(): Promise<AppContext> {
       port: config.monitoring.port,
       logger,
       monitor,
-      typesenseClient
+      typesenseClient,
+      authToken: config.monitoring.authToken,
+      reindexCollection: async (collectionName) => {
+        const table = resolvedTables.find((item) => item.collection === collectionName);
+        if (!table) {
+          return { ok: false, reason: "Collection is not mapped to any table" };
+        }
+        if (reindexInFlight.has(collectionName)) {
+          return { ok: false, reason: "Reindex already in progress" };
+        }
+
+        reindexInFlight.add(collectionName);
+        try {
+          await initialSyncService.run([table]);
+          return { ok: true };
+        } catch (error) {
+          monitor.recordError(error, `reindex:${collectionName}`);
+          return {
+            ok: false,
+            reason: error instanceof Error ? error.message : String(error)
+          };
+        } finally {
+          reindexInFlight.delete(collectionName);
+        }
+      }
     });
   }
 
@@ -74,16 +110,7 @@ export async function bootstrap(): Promise<AppContext> {
     tables: resolvedTables,
     logger,
     monitor,
-    initialSyncService: new InitialSyncService(
-      sourceReader,
-      collectionManager,
-      documentIndexer,
-      transformer,
-      config.sync.batchSize,
-      config.sync.retry,
-      logger,
-      monitor
-    ),
+    initialSyncService,
     realtimeSyncService: new RealtimeSyncService(
       binlogListener,
       collectionManager,

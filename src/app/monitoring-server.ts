@@ -12,6 +12,8 @@ export interface MonitoringServerOptions {
   logger: Logger;
   monitor: SyncMonitor;
   typesenseClient: Client;
+  authToken?: string;
+  reindexCollection: (collectionName: string) => Promise<{ ok: boolean; reason?: string }>;
 }
 
 function sendJson(response: ServerResponse, statusCode: number, payload: unknown) {
@@ -26,25 +28,90 @@ function sendText(response: ServerResponse, statusCode: number, payload: string,
   response.end(payload);
 }
 
+function decodeBasicAuthToken(request: IncomingMessage): string | null {
+  const authorization = request.headers.authorization;
+  if (!authorization?.startsWith("Basic ")) {
+    return null;
+  }
+
+  const encoded = authorization.slice("Basic ".length).trim();
+  if (!encoded) {
+    return null;
+  }
+
+  try {
+    const raw = Buffer.from(encoded, "base64").toString("utf8");
+    const [username, password = ""] = raw.split(":", 2);
+    return password || username || null;
+  } catch {
+    return null;
+  }
+}
+
+function isAuthorized(request: IncomingMessage, token?: string): boolean {
+  if (!token) {
+    return true;
+  }
+
+  return decodeBasicAuthToken(request) === token;
+}
+
+function challengeAuth(response: ServerResponse): void {
+  response.statusCode = 401;
+  response.setHeader("www-authenticate", 'Basic realm="mysql2typesense-dashboard"');
+  response.end("Authentication required");
+}
+
+function isAdminRoute(pathname: string): boolean {
+  return pathname === "/dashboard" || pathname === "/" || pathname.startsWith("/api/collections") || pathname.startsWith("/api/reindex");
+}
+
 async function handleApiCollections(
   request: IncomingMessage,
+  url: URL,
   response: ServerResponse,
   typesenseClient: Client
 ): Promise<boolean> {
-  if (request.method === "GET" && request.url === "/api/collections") {
+  if (request.method === "GET" && url.pathname === "/api/collections") {
     const collections = await typesenseClient.collections().retrieve();
     sendJson(response, 200, { collections });
     return true;
   }
 
-  if (request.method === "DELETE" && request.url?.startsWith("/api/collections/")) {
-    const name = decodeURIComponent(request.url.replace("/api/collections/", ""));
+  if (request.method === "DELETE" && url.pathname.startsWith("/api/collections/")) {
+    const name = decodeURIComponent(url.pathname.replace("/api/collections/", ""));
     await typesenseClient.collections(name).delete();
     sendJson(response, 200, { ok: true, deleted: name });
     return true;
   }
 
   return false;
+}
+
+async function handleReindexRequest(
+  request: IncomingMessage,
+  url: URL,
+  response: ServerResponse,
+  reindexCollection: (collectionName: string) => Promise<{ ok: boolean; reason?: string }>
+): Promise<boolean> {
+  if (request.method !== "POST" || !url.pathname.startsWith("/api/reindex/")) {
+    return false;
+  }
+
+  const collectionName = decodeURIComponent(url.pathname.replace("/api/reindex/", ""));
+  if (!collectionName) {
+    sendJson(response, 400, { ok: false, error: "Collection name is required" });
+    return true;
+  }
+
+  const result = await reindexCollection(collectionName);
+  if (result.ok) {
+    sendJson(response, 200, { ok: true, collection: collectionName });
+  } else {
+    sendJson(response, 409, { ok: false, collection: collectionName, error: result.reason ?? "Reindex failed" });
+  }
+
+  return true;
 }
 
 function dashboardHtml(): string {
@@ -110,6 +177,13 @@ function dashboardHtml(): string {
     button:hover { border-color: var(--accent); }
     .danger { color: var(--danger); }
     .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .chart-wrap { width: 100%; height: 240px; }
+    #throughputChart { width: 100%; height: 240px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .legend { display: flex; gap: 12px; margin-top: 8px; color: var(--muted); }
+    .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; margin-right: 6px; border-radius: 2px; vertical-align: -1px; }
+    .legend .upserts::before { background: #1f7a5a; }
+    .legend .deletes::before { background: #b42318; }
+    .muted-note { margin-top: 6px; color: var(--muted); font-size: 13px; }
   </style>
 </head>
 <body>
@@ -127,6 +201,18 @@ function dashboardHtml(): string {
     <div class="card">
       <h2>Metrics</h2>
       <div class="grid" id="metrics"></div>
+    </div>
+
+    <div class="card">
+      <h2>Realtime Throughput</h2>
+      <div class="chart-wrap">
+        <canvas id="throughputChart" width="1024" height="240"></canvas>
+      </div>
+      <div class="legend">
+        <span class="upserts">Upserts / sec</span>
+        <span class="deletes">Deletes / sec</span>
+      </div>
+      <div id="rateSummary" class="muted-note">Loading rates...</div>
     </div>
 
     <div class="card">
@@ -197,12 +283,86 @@ function dashboardHtml(): string {
       });
     }
 
+    function drawThroughputChart(points) {
+      const canvas = document.getElementById('throughputChart');
+      const context = canvas.getContext('2d');
+      if (!context) {
+        return;
+      }
+
+      const width = canvas.width;
+      const height = canvas.height;
+      context.clearRect(0, 0, width, height);
+
+      const padding = { top: 18, right: 16, bottom: 24, left: 36 };
+      const plotWidth = width - padding.left - padding.right;
+      const plotHeight = height - padding.top - padding.bottom;
+
+      context.strokeStyle = '#dad3c6';
+      context.lineWidth = 1;
+      context.beginPath();
+      context.moveTo(padding.left, padding.top);
+      context.lineTo(padding.left, height - padding.bottom);
+      context.lineTo(width - padding.right, height - padding.bottom);
+      context.stroke();
+
+      const normalized = points.slice(-60);
+      const maxValue = Math.max(1, ...normalized.map((p) => Math.max(p.upserts, p.deletes)));
+      const xStep = normalized.length > 1 ? plotWidth / (normalized.length - 1) : plotWidth;
+      const toY = (value) => padding.top + plotHeight - (value / maxValue) * plotHeight;
+
+      context.fillStyle = '#6a665f';
+      context.font = '12px Segoe UI';
+      context.fillText(String(maxValue), 6, padding.top + 4);
+      context.fillText('0', 16, height - padding.bottom + 4);
+
+      function drawLine(color, key) {
+        context.strokeStyle = color;
+        context.lineWidth = 2;
+        context.beginPath();
+        normalized.forEach((point, index) => {
+          const x = padding.left + xStep * index;
+          const y = toY(point[key]);
+          if (index === 0) {
+            context.moveTo(x, y);
+          } else {
+            context.lineTo(x, y);
+          }
+        });
+        context.stroke();
+      }
+
+      if (normalized.length > 0) {
+        drawLine('#1f7a5a', 'upserts');
+        drawLine('#b42318', 'deletes');
+      }
+    }
+
     async function renderCollections() {
       const body = document.getElementById('collections');
       body.innerHTML = '';
       const payload = await fetchJson('/api/collections');
       payload.collections.forEach((collection) => {
         const tr = document.createElement('tr');
+        const wrapper = document.createElement('div');
+        wrapper.style.display = 'flex';
+        wrapper.style.gap = '8px';
+
+        const reindexBtn = document.createElement('button');
+        reindexBtn.textContent = 'Reindex';
+        reindexBtn.onclick = async () => {
+          reindexBtn.disabled = true;
+          try {
+            await fetchJson('/api/reindex/' + encodeURIComponent(collection.name), { method: 'POST' });
+            alert('Reindex started for ' + collection.name);
+            await refreshAll();
+          } catch (error) {
+            alert('Reindex failed: ' + error.message);
+          } finally {
+            reindexBtn.disabled = false;
+          }
+        };
+
         const btn = document.createElement('button');
         btn.className = 'danger';
         btn.textContent = 'Delete';
@@ -213,7 +373,9 @@ function dashboardHtml(): string {
         };
 
         const actionTd = document.createElement('td');
-        actionTd.appendChild(btn);
+        wrapper.appendChild(reindexBtn);
+        wrapper.appendChild(btn);
+        actionTd.appendChild(wrapper);
         tr.innerHTML = '<td>' + collection.name + '</td><td>' + collection.num_documents + '</td>';
         tr.appendChild(actionTd);
         body.appendChild(tr);
@@ -237,23 +399,32 @@ function dashboardHtml(): string {
       renderMetrics(status.counters);
       renderTableStats(status.perTable);
       renderErrors(status.recentErrors);
+      drawThroughputChart(status.throughput || []);
+      const latest = (status.throughput || [])[Math.max(0, (status.throughput || []).length - 1)] || { upserts: 0, deletes: 0 };
+      document.getElementById('rateSummary').textContent =
+        'Current: ' + latest.upserts + ' upserts/s, ' + latest.deletes + ' deletes/s';
       await renderCollections();
     }
 
     document.getElementById('refreshBtn').addEventListener('click', refreshAll);
     refreshAll();
-    setInterval(refreshAll, 5000);
+    setInterval(refreshAll, 2000);
   </script>
 </body>
 </html>`;
 }
 
 export function startMonitoringServer(options: MonitoringServerOptions): Server {
-  const { host, port, logger, monitor, typesenseClient } = options;
+  const { host, port, logger, monitor, typesenseClient, authToken, reindexCollection } = options;
 
   const server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+
+      if (isAdminRoute(url.pathname) && !isAuthorized(request, authToken)) {
+        challengeAuth(response);
+        return;
+      }
 
       if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/dashboard")) {
         sendText(response, 200, dashboardHtml(), "text/html; charset=utf-8");
@@ -275,7 +446,11 @@ export function startMonitoringServer(options: MonitoringServerOptions): Server 
         return;
       }
 
-      if (await handleApiCollections(request, response, typesenseClient)) {
+      if (await handleApiCollections(request, url, response, typesenseClient)) {
+        return;
+      }
+
+      if (await handleReindexRequest(request, url, response, reindexCollection)) {
         return;
       }
 

@@ -110,6 +110,7 @@ CHECKPOINT_REDIS_KEY=mysql2typesense:binlog
 MONITORING_ENABLED=true
 MONITORING_HOST=0.0.0.0
 MONITORING_PORT=8080
+MONITORING_AUTH_TOKEN=your_dashboard_token
 ```
 
 -----
@@ -138,10 +139,15 @@ Khi service đang chạy, bạn có thể dùng:
 
 - `GET /health`: kiểm tra trạng thái sống.
 - `GET /metrics`: metrics dạng Prometheus.
-- `GET /dashboard`: giao diện theo dõi realtime.
+- `GET /dashboard`: giao diện theo dõi realtime (có Basic Auth nếu bật `MONITORING_AUTH_TOKEN`).
 - `GET /api/status`: snapshot trạng thái sync.
-- `GET /api/collections`: danh sách collection Typesense.
-- `DELETE /api/collections/:name`: xóa collection (quản lý cơ bản từ dashboard).
+- `GET /api/collections`: danh sách collection Typesense (admin API).
+- `DELETE /api/collections/:name`: xóa collection (admin API).
+- `POST /api/reindex/:name`: trigger reindex theo từng collection (admin API).
+
+Khi đặt `MONITORING_AUTH_TOKEN`, dashboard và admin API sẽ yêu cầu HTTP Basic Auth:
+- username: bất kỳ
+- password: giá trị của `MONITORING_AUTH_TOKEN`
 
 ### Bước 1: Đồng bộ dữ liệu lần đầu (Initial Sync)
 

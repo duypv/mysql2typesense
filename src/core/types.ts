@@ -138,8 +138,15 @@ export interface AppConfig {
     host: string;
     port: number;
     enabled: boolean;
+    authToken?: string;
   };
   logLevel: string;
+}
+
+export interface ThroughputPoint {
+  at: string;
+  upserts: number;
+  deletes: number;
 }
 
 export interface SyncMonitorSnapshot {
@@ -155,6 +162,7 @@ export interface SyncMonitorSnapshot {
   };
   perTable: Record<string, { initialDocuments: number; upserts: number; deletes: number }>;
   recentErrors: Array<{ at: string; message: string; context?: string }>;
+  throughput: ThroughputPoint[];
 }
 
 export interface SyncMonitor {

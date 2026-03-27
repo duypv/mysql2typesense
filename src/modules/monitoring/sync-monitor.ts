@@ -1,6 +1,7 @@
-import type { ChangeOperation, SyncMonitor, SyncMonitorSnapshot, TableSyncConfig } from "../../core/types.js";
+import type { ChangeOperation, SyncMonitor, SyncMonitorSnapshot, TableSyncConfig, ThroughputPoint } from "../../core/types.js";
 
 export class InMemorySyncMonitor implements SyncMonitor {
+  private static readonly MAX_THROUGHPUT_POINTS = 120;
   private readonly startedAt = new Date().toISOString();
   private mode: "idle" | "initial" | "realtime" = "idle";
   private tables: string[] = [];
@@ -13,6 +14,22 @@ export class InMemorySyncMonitor implements SyncMonitor {
   };
   private readonly perTable: Record<string, { initialDocuments: number; upserts: number; deletes: number }> = {};
   private readonly recentErrors: Array<{ at: string; message: string; context?: string }> = [];
+  private readonly throughput: ThroughputPoint[] = [];
+
+  private ensureCurrentThroughputPoint(): ThroughputPoint {
+    const currentSecond = new Date().toISOString().slice(0, 19) + "Z";
+    const last = this.throughput[this.throughput.length - 1];
+    if (last?.at === currentSecond) {
+      return last;
+    }
+
+    const point: ThroughputPoint = { at: currentSecond, upserts: 0, deletes: 0 };
+    this.throughput.push(point);
+    if (this.throughput.length > InMemorySyncMonitor.MAX_THROUGHPUT_POINTS) {
+      this.throughput.shift();
+    }
+    return point;
+  }
 
   setTables(tables: TableSyncConfig[]): void {
     this.tables = tables.map((table) => `${table.database}.${table.table}`);
@@ -34,14 +51,17 @@ export class InMemorySyncMonitor implements SyncMonitor {
 
   recordRealtimeEvent(table: string, operation: ChangeOperation): void {
     this.perTable[table] ??= { initialDocuments: 0, upserts: 0, deletes: 0 };
+    const throughputPoint = this.ensureCurrentThroughputPoint();
     if (operation === "upsert") {
       this.counters.realtimeUpserts += 1;
       this.perTable[table].upserts += 1;
+      throughputPoint.upserts += 1;
       return;
     }
 
     this.counters.realtimeDeletes += 1;
     this.perTable[table].deletes += 1;
+    throughputPoint.deletes += 1;
   }
 
   recordError(error: unknown, context?: string): void {
@@ -63,7 +83,8 @@ export class InMemorySyncMonitor implements SyncMonitor {
       tables: this.tables,
       counters: { ...this.counters },
       perTable: { ...this.perTable },
-      recentErrors: [...this.recentErrors]
+      recentErrors: [...this.recentErrors],
+      throughput: [...this.throughput]
     };
   }
 
