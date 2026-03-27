@@ -22,6 +22,7 @@ export class MySqlBinlogListener implements BinlogListener {
   private readonly zongji: ZongJi;
   private currentCheckpoint: BinlogCheckpoint | null = null;
   private started = false;
+  private readonly tableByKey = new Map<string, TableSyncConfig>();
 
   private logger: any = null;
 
@@ -32,6 +33,9 @@ export class MySqlBinlogListener implements BinlogListener {
     logger?: any
   ) {
     this.logger = logger;
+    for (const table of tables) {
+      this.tableByKey.set(this.tableKey(table.database, table.table), table);
+    }
     this.zongji = new ZongJi({
       host: config.mysql.host,
       port: config.mysql.port,
@@ -41,13 +45,32 @@ export class MySqlBinlogListener implements BinlogListener {
     });
   }
 
+  registerTable(table: TableSyncConfig): void {
+    const key = this.tableKey(table.database, table.table);
+    if (!this.tableByKey.has(key)) {
+      this.tableByKey.set(key, table);
+      this.logger?.info({ table: key }, "Registered table for realtime sync");
+    }
+  }
+
   async start(onChange: (event: ChangeEvent) => Promise<void>): Promise<void> {
     this.currentCheckpoint = await this.checkpointStore.load();
-    const includeSchema = this.tables.reduce<Record<string, string[]>>((accumulator, table) => {
-      accumulator[table.database] ??= [];
-      accumulator[table.database].push(table.table);
-      return accumulator;
-    }, {});
+    const includeSchema = this.config.sync.database && this.config.sync.tables.length === 0
+      ? Array.from(new Set(Array.from(this.tableByKey.values()).map((table) => table.database))).reduce<
+          Record<string, true | string[]>
+        >((accumulator, database) => {
+          accumulator[database] = true;
+          return accumulator;
+        }, {})
+      : Array.from(this.tableByKey.values()).reduce<Record<string, true | string[]>>((accumulator, table) => {
+          const current = accumulator[table.database];
+          if (Array.isArray(current)) {
+            current.push(table.table);
+          } else if (current !== true) {
+            accumulator[table.database] = [table.table];
+          }
+          return accumulator;
+        }, {});
 
     this.logger?.info(
       { checkpoint: this.currentCheckpoint, includeSchema },
@@ -77,13 +100,18 @@ export class MySqlBinlogListener implements BinlogListener {
       this.zongji.on("error", handleError);
       this.zongji.on("binlog", handleEvent);
 
-      this.started = true;
-      this.zongji.start({
+      const startOptions: Record<string, unknown> = {
         includeEvents: ["tablemap", "writerows", "updaterows", "deleterows"],
-        includeSchema,
-        filename: this.currentCheckpoint?.filename,
-        position: this.currentCheckpoint?.position
-      });
+        includeSchema: includeSchema as Record<string, unknown>
+      };
+
+      if (this.currentCheckpoint?.filename && this.currentCheckpoint.position !== undefined) {
+        startOptions.filename = this.currentCheckpoint.filename;
+        startOptions.position = this.currentCheckpoint.position;
+      }
+
+      this.started = true;
+      this.zongji.start(startOptions);
     });
   }
 
@@ -156,9 +184,14 @@ export class MySqlBinlogListener implements BinlogListener {
 
   private resolveTable(event: RawBinlogEvent): TableSyncConfig | undefined {
     const eventTable = event.tableId !== undefined ? event.tableMap?.[event.tableId] : undefined;
+    if (!eventTable?.parentSchema || !eventTable.tableName) {
+      return undefined;
+    }
 
-    return this.tables.find(
-      (table) => table.database === eventTable?.parentSchema && table.table === eventTable?.tableName
-    );
+    return this.tableByKey.get(this.tableKey(eventTable.parentSchema, eventTable.tableName));
+  }
+
+  private tableKey(database: string, table: string): string {
+    return `${database}.${table}`;
   }
 }

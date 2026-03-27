@@ -35,6 +35,20 @@ function inferDefaultSortingField(fields: TypesenseFieldConfig[]): string | unde
   return sortableNumeric[0]?.name;
 }
 
+function withStringInfixDefaults(fields: TypesenseFieldConfig[], enabled: boolean): TypesenseFieldConfig[] {
+  if (!enabled) {
+    return fields;
+  }
+
+  return fields.map((field) => {
+    if ((field.type === "string" || field.type === "string*") && field.infix === undefined) {
+      return { ...field, infix: true };
+    }
+
+    return field;
+  });
+}
+
 export async function resolveTableConfigs(
   introspector: MysqlSchemaIntrospector,
   defaultDatabase: string,
@@ -43,6 +57,7 @@ export async function resolveTableConfigs(
 ): Promise<TableSyncConfig[]> {
   const resolvedDefaultDatabase = databaseConfig?.name ?? defaultDatabase;
   const excludedFieldNames = new Set((databaseConfig?.excludeFields ?? []).map((name) => name.toLowerCase()));
+  const infixStringEnabled = databaseConfig?.infixString === true;
 
   const effectiveSeeds: TableSyncConfigSeed[] =
     seeds.length > 0
@@ -128,6 +143,8 @@ export async function resolveTableConfigs(
     if (!fields.some((field) => field.name === "id")) {
       fields.unshift({ name: "id", type: "string" });
     }
+
+    fields = withStringInfixDefaults(fields, infixStringEnabled);
 
     resolved.push({
       database,

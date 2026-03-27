@@ -14,6 +14,12 @@ export interface MonitoringServerOptions {
   typesenseClient: Client;
   authToken?: string;
   reindexCollection: (collectionName: string) => Promise<{ ok: boolean; reason?: string }>;
+  getDiscoveredTables: () => {
+    autoDiscoveryEnabled: boolean;
+    startupDiscovered: string[];
+    runtimeDiscovered: string[];
+    currentTables: string[];
+  };
 }
 
 function sendJson(response: ServerResponse, statusCode: number, payload: unknown) {
@@ -63,7 +69,13 @@ function challengeAuth(response: ServerResponse): void {
 }
 
 function isAdminRoute(pathname: string): boolean {
-  return pathname === "/dashboard" || pathname === "/" || pathname.startsWith("/api/collections") || pathname.startsWith("/api/reindex");
+  return (
+    pathname === "/dashboard" ||
+    pathname === "/" ||
+    pathname.startsWith("/api/collections") ||
+    pathname.startsWith("/api/reindex") ||
+    pathname === "/api/discovered-tables"
+  );
 }
 
 async function handleApiCollections(
@@ -184,6 +196,22 @@ function dashboardHtml(): string {
     .legend .upserts::before { background: #1f7a5a; }
     .legend .deletes::before { background: #b42318; }
     .muted-note { margin-top: 6px; color: var(--muted); font-size: 13px; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 12px;
+      margin-right: 6px;
+      margin-bottom: 6px;
+      background: #fff;
+    }
+    .pill.runtime {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: #edf8f3;
+    }
   </style>
 </head>
 <body>
@@ -223,6 +251,12 @@ function dashboardHtml(): string {
         </thead>
         <tbody id="tableStats"></tbody>
       </table>
+    </div>
+
+    <div class="card">
+      <h2>Auto-Discovered Tables</h2>
+      <div class="muted-note" id="discoveryMode">Loading...</div>
+      <div id="discoveredTables"></div>
     </div>
 
     <div class="card">
@@ -392,6 +426,35 @@ function dashboardHtml(): string {
       });
     }
 
+    async function renderDiscoveredTables() {
+      const payload = await fetchJson('/api/discovered-tables');
+      const modeLine = document.getElementById('discoveryMode');
+      modeLine.textContent = payload.autoDiscoveryEnabled
+        ? 'Auto-discovery is enabled (database mode).'
+        : 'Auto-discovery is disabled (explicit tables config mode).';
+
+      const root = document.getElementById('discoveredTables');
+      root.innerHTML = '';
+
+      const startupSet = new Set(payload.startupDiscovered || []);
+      const runtimeSet = new Set(payload.runtimeDiscovered || []);
+      const current = payload.currentTables || [];
+
+      if (current.length === 0) {
+        root.innerHTML = '<div class="muted-note">No tables are currently tracked.</div>';
+        return;
+      }
+
+      current.forEach((tableName) => {
+        const badge = document.createElement('span');
+        const isRuntime = runtimeSet.has(tableName);
+        badge.className = 'pill' + (isRuntime ? ' runtime' : '');
+        const source = isRuntime ? 'runtime' : startupSet.has(tableName) ? 'startup' : 'tracked';
+        badge.textContent = tableName + ' (' + source + ')';
+        root.appendChild(badge);
+      });
+    }
+
     async function refreshAll() {
       const status = await fetchJson('/api/status');
       document.getElementById('statusLine').textContent =
@@ -403,6 +466,7 @@ function dashboardHtml(): string {
       const latest = (status.throughput || [])[Math.max(0, (status.throughput || []).length - 1)] || { upserts: 0, deletes: 0 };
       document.getElementById('rateSummary').textContent =
         'Current: ' + latest.upserts + ' upserts/s, ' + latest.deletes + ' deletes/s';
+      await renderDiscoveredTables();
       await renderCollections();
     }
 
@@ -415,7 +479,7 @@ function dashboardHtml(): string {
 }
 
 export function startMonitoringServer(options: MonitoringServerOptions): Server {
-  const { host, port, logger, monitor, typesenseClient, authToken, reindexCollection } = options;
+  const { host, port, logger, monitor, typesenseClient, authToken, reindexCollection, getDiscoveredTables } = options;
 
   const server = createServer(async (request, response) => {
     try {
@@ -443,6 +507,11 @@ export function startMonitoringServer(options: MonitoringServerOptions): Server 
 
       if (request.method === "GET" && url.pathname === "/api/status") {
         sendJson(response, 200, monitor.snapshot());
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/discovered-tables") {
+        sendJson(response, 200, getDiscoveredTables());
         return;
       }
 

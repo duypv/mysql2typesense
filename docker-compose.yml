@@ -58,7 +58,7 @@ services:
       DB_PASS: root
       DB_NAME: app
       SYNC_CONFIG_PATH: /app/config/sync.config.json
-      SYNC_BATCH_SIZE: 500
+      SYNC_BATCH_SIZE: 100
       TS_NODE_HOST: typesense
       TS_NODE_PORT: 8108
       TS_NODE_PROTOCOL: http

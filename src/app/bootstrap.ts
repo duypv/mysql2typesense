@@ -53,6 +53,8 @@ export async function bootstrap(): Promise<AppContext> {
     config.sync.tables,
     config.sync.database
   );
+  const startupDiscoveredTables = new Set(resolvedTables.map((table) => `${table.database}.${table.table}`));
+  const runtimeDiscoveredTables = new Set<string>();
   const monitor = new InMemorySyncMonitor();
   monitor.setTables(resolvedTables);
 
@@ -63,6 +65,9 @@ export async function bootstrap(): Promise<AppContext> {
   const transformer = new ConfigDrivenTransformer();
   const binlogListener = new MySqlBinlogListener(config, resolvedTables, checkpointStore, logger);
   const reindexInFlight = new Set<string>();
+  const autoDatabaseMode = Boolean(config.sync.database && config.sync.tables.length === 0);
+  let tableRefreshTimer: NodeJS.Timeout | null = null;
+  let refreshInProgress = false;
   let monitoringServer: Server | null = null;
 
   const initialSyncService = new InitialSyncService(
@@ -75,6 +80,58 @@ export async function bootstrap(): Promise<AppContext> {
     logger,
     monitor
   );
+
+  if (autoDatabaseMode) {
+    tableRefreshTimer = setInterval(async () => {
+      if (refreshInProgress) {
+        return;
+      }
+
+      refreshInProgress = true;
+      try {
+        const database = config.sync.database?.name ?? config.mysql.database;
+        const discoveredTables = await introspector.listTables(database);
+        const knownTables = new Set(resolvedTables.map((table) => `${table.database}.${table.table}`));
+
+        for (const tableName of discoveredTables) {
+          const key = `${database}.${tableName}`;
+          if (knownTables.has(key)) {
+            continue;
+          }
+
+          const [resolved] = await resolveTableConfigs(
+            introspector,
+            config.mysql.database,
+            [{ database, table: tableName }],
+            config.sync.database
+          );
+
+          if (!resolved) {
+            continue;
+          }
+
+          resolvedTables.push(resolved);
+          monitor.setTables(resolvedTables);
+          binlogListener.registerTable?.(resolved);
+          runtimeDiscoveredTables.add(key);
+          logger.info({ table: key }, "Discovered new table in database mode");
+
+          try {
+            await initialSyncService.run([resolved]);
+            monitor.markMode("realtime");
+            logger.info({ table: key }, "Initial backfill completed for newly discovered table");
+          } catch (error) {
+            monitor.recordError(error, `auto-discovery:${key}`);
+            logger.error({ error, table: key }, "Initial backfill failed for newly discovered table");
+          }
+        }
+      } catch (error) {
+        logger.error({ error }, "Periodic table discovery failed");
+      } finally {
+        refreshInProgress = false;
+      }
+    }, 15000);
+  }
 
   if (config.monitoring.enabled) {
     monitoringServer = startMonitoringServer({
@@ -106,7 +163,13 @@ export async function bootstrap(): Promise<AppContext> {
         } finally {
           reindexInFlight.delete(collectionName);
         }
-      }
+      },
+      getDiscoveredTables: () => ({
+        autoDiscoveryEnabled: autoDatabaseMode,
+        startupDiscovered: Array.from(startupDiscoveredTables).sort(),
+        runtimeDiscovered: Array.from(runtimeDiscoveredTables).sort(),
+        currentTables: resolvedTables.map((table) => `${table.database}.${table.table}`).sort()
+      })
     });
   }
 
@@ -128,6 +191,10 @@ export async function bootstrap(): Promise<AppContext> {
     ),
     async dispose() {
       monitor.markMode("idle");
+      if (tableRefreshTimer) {
+        clearInterval(tableRefreshTimer);
+        tableRefreshTimer = null;
+      }
       await mysqlPool.end();
       await binlogListener.stop();
       await checkpointStore.close();
