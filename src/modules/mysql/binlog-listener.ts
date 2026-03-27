@@ -1,4 +1,4 @@
-import ZongJi from "zongji";
+import ZongJi from "@powersync/mysql-zongji";
 
 import type {
   AppConfig,

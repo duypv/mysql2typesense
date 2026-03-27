@@ -42,6 +42,7 @@ services:
       - ./typesense-data:/data
 
   sync-app:
+    platform: linux/amd64
     build:
       context: .
     depends_on:
