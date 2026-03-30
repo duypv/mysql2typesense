@@ -4,7 +4,7 @@ import type { Server } from "node:http";
 
 import { loadConfig } from "../config/env.js";
 import { createLogger } from "../config/logger.js";
-import type { AppConfig, CheckpointStore, TableSyncConfig } from "../core/types.js";
+import type { AppConfig, BinlogCheckpoint, CheckpointStore, TableSyncConfig } from "../core/types.js";
 import { FileCheckpointStore } from "../modules/checkpoint/file-checkpoint-store.js";
 import { RedisCheckpointStore } from "../modules/checkpoint/redis-checkpoint-store.js";
 import { MySqlBinlogListener } from "../modules/mysql/binlog-listener.js";
@@ -162,6 +162,82 @@ export async function bootstrap(): Promise<AppContext> {
           };
         } finally {
           reindexInFlight.delete(collectionName);
+        }
+      },
+      updateCollectionSchema: async (collectionName) => {
+        const tableIndex = resolvedTables.findIndex((item) => item.collection === collectionName);
+        if (tableIndex === -1) {
+          return { ok: false, reason: "Collection is not mapped to any table" };
+        }
+        if (reindexInFlight.has(collectionName)) {
+          return { ok: false, reason: "Reindex already in progress" };
+        }
+
+        const existingTable = resolvedTables[tableIndex];
+        const [freshConfig] = await resolveTableConfigs(
+          introspector,
+          config.mysql.database,
+          [{ database: existingTable.database, table: existingTable.table, collection: existingTable.collection }],
+          config.sync.database
+        );
+
+        if (!freshConfig) {
+          return { ok: false, reason: "Failed to resolve fresh table config from database" };
+        }
+
+        const fields = freshConfig.typesense.fields.some((f) => f.name === "id")
+          ? freshConfig.typesense.fields
+          : [{ name: "id", type: "string" as const }, ...freshConfig.typesense.fields];
+
+        reindexInFlight.add(collectionName);
+        try {
+          try {
+            await typesenseClient.collections(collectionName).update({ fields });
+          } catch {
+            // Schema update failed (e.g. incompatible type change) — delete and re-sync
+            logger.warn({ collection: collectionName }, "Schema update failed, deleting collection and re-syncing");
+            try {
+              await typesenseClient.collections(collectionName).delete();
+            } catch { /* ignore if already gone */ }
+            resolvedTables[tableIndex] = freshConfig;
+            await initialSyncService.run([freshConfig]);
+            return { ok: true };
+          }
+          resolvedTables[tableIndex] = freshConfig;
+          return { ok: true };
+        } catch (error) {
+          monitor.recordError(error, `update-schema:${collectionName}`);
+          return {
+            ok: false,
+            reason: error instanceof Error ? error.message : String(error)
+          };
+        } finally {
+          reindexInFlight.delete(collectionName);
+        }
+      },
+      resetTypesense: async () => {
+        try {
+          // Delete all Typesense collections
+          const collections = await typesenseClient.collections().retrieve();
+          for (const col of collections) {
+            try {
+              await typesenseClient.collections(col.name).delete();
+            } catch { /* ignore */ }
+          }
+
+          // Reset checkpoint so binlog listener starts from current position on next restart
+          const emptyCheckpoint: BinlogCheckpoint = { updatedAt: new Date().toISOString() };
+          await checkpointStore.save(emptyCheckpoint);
+
+          // Re-run initial sync for all tables
+          await initialSyncService.run(resolvedTables);
+          return { ok: true };
+        } catch (error) {
+          monitor.recordError(error, "reset");
+          return {
+            ok: false,
+            reason: error instanceof Error ? error.message : String(error)
+          };
         }
       },
       getDiscoveredTables: () => ({

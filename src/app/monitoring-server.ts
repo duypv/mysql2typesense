@@ -14,6 +14,8 @@ export interface MonitoringServerOptions {
   typesenseClient: Client;
   authToken?: string;
   reindexCollection: (collectionName: string) => Promise<{ ok: boolean; reason?: string }>;
+  updateCollectionSchema: (collectionName: string) => Promise<{ ok: boolean; reason?: string }>;
+  resetTypesense: () => Promise<{ ok: boolean; reason?: string }>;
   getDiscoveredTables: () => {
     autoDiscoveryEnabled: boolean;
     startupDiscovered: string[];
@@ -74,6 +76,8 @@ function isAdminRoute(pathname: string): boolean {
     pathname === "/" ||
     pathname.startsWith("/api/collections") ||
     pathname.startsWith("/api/reindex") ||
+    pathname.startsWith("/api/update-schema") ||
+    pathname === "/api/reset" ||
     pathname === "/api/discovered-tables"
   );
 }
@@ -121,6 +125,52 @@ async function handleReindexRequest(
     sendJson(response, 200, { ok: true, collection: collectionName });
   } else {
     sendJson(response, 409, { ok: false, collection: collectionName, error: result.reason ?? "Reindex failed" });
+  }
+
+  return true;
+}
+
+async function handleUpdateSchemaRequest(
+  request: IncomingMessage,
+  url: URL,
+  response: ServerResponse,
+  updateCollectionSchema: (collectionName: string) => Promise<{ ok: boolean; reason?: string }>
+): Promise<boolean> {
+  if (request.method !== "POST" || !url.pathname.startsWith("/api/update-schema/")) {
+    return false;
+  }
+
+  const collectionName = decodeURIComponent(url.pathname.replace("/api/update-schema/", ""));
+  if (!collectionName) {
+    sendJson(response, 400, { ok: false, error: "Collection name is required" });
+    return true;
+  }
+
+  const result = await updateCollectionSchema(collectionName);
+  if (result.ok) {
+    sendJson(response, 200, { ok: true, collection: collectionName });
+  } else {
+    sendJson(response, 409, { ok: false, collection: collectionName, error: result.reason ?? "Update schema failed" });
+  }
+
+  return true;
+}
+
+async function handleResetRequest(
+  request: IncomingMessage,
+  url: URL,
+  response: ServerResponse,
+  resetTypesense: () => Promise<{ ok: boolean; reason?: string }>
+): Promise<boolean> {
+  if (request.method !== "POST" || url.pathname !== "/api/reset") {
+    return false;
+  }
+
+  const result = await resetTypesense();
+  if (result.ok) {
+    sendJson(response, 200, { ok: true });
+  } else {
+    sendJson(response, 500, { ok: false, error: result.reason ?? "Reset failed" });
   }
 
   return true;
@@ -222,7 +272,9 @@ function dashboardHtml(): string {
           <h1>Sync Dashboard</h1>
           <div class="muted" id="statusLine">Loading...</div>
         </div>
-        <button id="refreshBtn">Refresh</button>
+        <div style="display:flex;gap:8px;">
+          <button id="refreshBtn">Refresh</button>
+        </div>
       </div>
     </div>
 
@@ -277,6 +329,17 @@ function dashboardHtml(): string {
         </thead>
         <tbody id="errors"></tbody>
       </table>
+    </div>
+
+    <div class="card" style="border-color:#b42318;">
+      <h2 class="danger">Danger Zone</h2>
+      <div class="row">
+        <div>
+          <b>Reset Typesense</b>
+          <div class="muted-note">Xoa het du lieu Typesense, reset checkpoint binlog (Redis/file), dong bo lai tu dau.</div>
+        </div>
+        <button id="resetBtn" class="danger" style="border-color:#b42318;">Reset Typesense</button>
+      </div>
     </div>
   </div>
 
@@ -397,6 +460,24 @@ function dashboardHtml(): string {
           }
         };
 
+        const updateSchemaBtn = document.createElement('button');
+        updateSchemaBtn.textContent = 'Force Update Schema';
+        updateSchemaBtn.title = 'Cap nhat schema Typesense theo database moi nhat. Neu loi se xoa collection va dong bo lai.';
+        updateSchemaBtn.onclick = async () => {
+          updateSchemaBtn.disabled = true;
+          updateSchemaBtn.textContent = 'Updating...';
+          try {
+            await fetchJson('/api/update-schema/' + encodeURIComponent(collection.name), { method: 'POST' });
+            alert('Schema updated for ' + collection.name);
+            await refreshAll();
+          } catch (error) {
+            alert('Update schema failed: ' + error.message);
+          } finally {
+            updateSchemaBtn.disabled = false;
+            updateSchemaBtn.textContent = 'Force Update Schema';
+          }
+        };
+
         const btn = document.createElement('button');
         btn.className = 'danger';
         btn.textContent = 'Delete';
@@ -408,6 +489,7 @@ function dashboardHtml(): string {
 
         const actionTd = document.createElement('td');
         wrapper.appendChild(reindexBtn);
+        wrapper.appendChild(updateSchemaBtn);
         wrapper.appendChild(btn);
         actionTd.appendChild(wrapper);
         tr.innerHTML = '<td>' + collection.name + '</td><td>' + collection.num_documents + '</td>';
@@ -471,15 +553,33 @@ function dashboardHtml(): string {
     }
 
     document.getElementById('refreshBtn').addEventListener('click', refreshAll);
+
+    document.getElementById('resetBtn').addEventListener('click', async () => {
+      if (!confirm('CANH BAO: Thao tac nay se xoa TOAN BO du lieu Typesense va dong bo lai tu dau. Tiep tuc?')) return;
+      if (!confirm('Xac nhan lan 2: Toan bo du lieu Typesense se bi xoa. Ban chac chan muon tiep tuc?')) return;
+      const btn = document.getElementById('resetBtn');
+      btn.disabled = true;
+      btn.textContent = 'Resetting...';
+      try {
+        await fetchJson('/api/reset', { method: 'POST' });
+        alert('Reset Typesense thanh cong. He thong dang dong bo lai du lieu.');
+        await refreshAll();
+      } catch (error) {
+        alert('Reset that bai: ' + error.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Reset Typesense';
+      }
+    });
+
     refreshAll();
-    setInterval(refreshAll, 2000);
   </script>
 </body>
 </html>`;
 }
 
 export function startMonitoringServer(options: MonitoringServerOptions): Server {
-  const { host, port, logger, monitor, typesenseClient, authToken, reindexCollection, getDiscoveredTables } = options;
+  const { host, port, logger, monitor, typesenseClient, authToken, reindexCollection, updateCollectionSchema, resetTypesense, getDiscoveredTables } = options;
 
   const server = createServer(async (request, response) => {
     try {
@@ -520,6 +620,14 @@ export function startMonitoringServer(options: MonitoringServerOptions): Server 
       }
 
       if (await handleReindexRequest(request, url, response, reindexCollection)) {
+        return;
+      }
+
+      if (await handleUpdateSchemaRequest(request, url, response, updateCollectionSchema)) {
+        return;
+      }
+
+      if (await handleResetRequest(request, url, response, resetTypesense)) {
         return;
       }
 
