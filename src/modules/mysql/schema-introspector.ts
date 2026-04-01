@@ -70,9 +70,10 @@ export class MysqlSchemaIntrospector {
     }
 
     if (/(json)/.test(type)) {
-      // In auto-discovery mode, MySQL JSON values can be returned as object, JSON string,
-      // or comma-joined string depending on driver/table shape. `auto` avoids brittle coercion.
-      return { type: "auto" };
+      // In auto-discovery mode, MySQL JSON values are returned as parsed objects by the query
+      // driver but as raw strings by ZongJi binlog events. Adding sourceFormat: "json" ensures
+      // the transformer parses strings while leaving already-parsed objects untouched.
+      return { type: "auto", sourceFormat: "json" };
     }
 
     if (/(set)/.test(type)) {
