@@ -16,11 +16,16 @@ export class TypesenseCollectionManager {
       const existing = await this.client.collections(table.collection).retrieve();
 
       if (!this.synced.has(table.collection)) {
-        this.synced.add(table.collection);
         const updates = this.diffOptionalFlags(existing.fields ?? [], fields);
         if (updates.length > 0) {
-          await this.client.collections(table.collection).update({ fields: updates as any });
+          try {
+            await this.client.collections(table.collection).update({ fields: updates as any });
+          } catch {
+            // Schema update may not be supported for some field types; continue anyway.
+            // The document-indexer fallback to partial update handles missing fields.
+          }
         }
+        this.synced.add(table.collection);
       }
     } catch {
       await this.client.collections().create({

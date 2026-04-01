@@ -14,7 +14,18 @@ export class TypesenseDocumentIndexer {
   }
 
   async upsertDocument(table: TableSyncConfig, document: SyncDocument): Promise<void> {
-    await this.client.collections(table.collection).documents().upsert(document);
+    try {
+      await this.client.collections(table.collection).documents().upsert(document);
+    } catch (error: unknown) {
+      // Partial binlog event (e.g. UPDATE with binlog-row-image != FULL) may omit
+      // unchanged columns, causing a 400 from Typesense for missing required fields.
+      // Fall back to partial update which only touches the provided fields.
+      if (error instanceof Error && "httpStatus" in error && (error as any).httpStatus === 400) {
+        await this.client.collections(table.collection).documents(document.id).update(document);
+        return;
+      }
+      throw error;
+    }
   }
 
   async deleteDocument(table: TableSyncConfig, documentId: string): Promise<void> {

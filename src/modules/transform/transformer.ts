@@ -64,10 +64,14 @@ export class ConfigDrivenTransformer implements DocumentTransformer {
               .map((item) => item.trim())
               .filter(Boolean);
       case "datetime": {
-        const dateValue = value instanceof Date ? value : new Date(String(value));
+        const strValue = String(value).trim();
+        if (strValue === "") {
+          return null;
+        }
+        const dateValue = value instanceof Date ? value : new Date(strValue);
         const epoch = dateValue.getTime();
         if (Number.isNaN(epoch)) {
-          throw new Error(`Cannot parse datetime value \"${String(value)}\"`);
+          return null;
         }
 
         return mapping.timestampResolution === "milliseconds" ? epoch : Math.floor(epoch / 1000);
@@ -133,10 +137,10 @@ export class ConfigDrivenTransformer implements DocumentTransformer {
     return TRUE_VALUES.has(String(value).trim().toLowerCase());
   }
 
-  private toNumber(value: unknown, integer: boolean): number {
+  private toNumber(value: unknown, integer: boolean): number | null {
     const parsed = Number(value);
     if (Number.isNaN(parsed)) {
-      throw new Error(`Cannot coerce value \"${String(value)}\" to number`);
+      return null;
     }
 
     return integer ? Math.trunc(parsed) : parsed;
