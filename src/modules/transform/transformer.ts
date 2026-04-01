@@ -44,6 +44,11 @@ export class ConfigDrivenTransformer implements DocumentTransformer {
     }
 
     const normalizedValue = this.normalizeSourceValue(value, mapping);
+    // JSON source values are already properly typed after parsing; skip coercion
+    // to avoid rejecting valid JSON arrays when the target type is "object".
+    if (mapping.sourceFormat === "json") {
+      return normalizedValue;
+    }
     return this.coerceValue(normalizedValue, mapping.type);
   }
 
