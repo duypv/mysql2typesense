@@ -10,19 +10,29 @@ export class TypesenseDocumentIndexer {
       return;
     }
 
-    await this.client.collections(table.collection).documents().import(documents, { action: "upsert" });
+    await this.client
+      .collections(table.collection)
+      .documents()
+      .import(documents, { action: "upsert", dirty_values: "coerce_or_drop" });
   }
 
   async upsertDocument(table: TableSyncConfig, document: SyncDocument): Promise<void> {
     try {
-      await this.client.collections(table.collection).documents().upsert(document);
+      await this.client
+        .collections(table.collection)
+        .documents()
+        .import([document], { action: "emplace", dirty_values: "coerce_or_drop" });
     } catch (error: unknown) {
-      // Partial binlog event (e.g. UPDATE with binlog-row-image != FULL) may omit
-      // unchanged columns, causing a 400 from Typesense for missing required fields.
-      // Fall back to partial update which only touches the provided fields.
-      if (error instanceof Error && "httpStatus" in error && (error as any).httpStatus === 400) {
-        await this.client.collections(table.collection).documents(document.id).update(document);
-        return;
+      // import() throws when any document fails. Extract the per-document result
+      // to decide whether to propagate. If the single document simply had
+      // uncoercible values that were dropped, treat it as a warning not a crash.
+      if (error instanceof Error && "importResults" in error) {
+        const results = (error as any).importResults as Array<{ success: boolean; error?: string }>;
+        const failed = results?.filter((r) => !r.success);
+        if (failed?.length) {
+          const reason = failed[0]?.error ?? "unknown";
+          throw new Error(`Typesense import failed for document ${document.id}: ${reason}`);
+        }
       }
       throw error;
     }
