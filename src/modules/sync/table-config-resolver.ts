@@ -128,12 +128,14 @@ export async function resolveTableConfigs(
       }
     } else {
       // No configured fields: infer from all columns.
+      // Mark all fields as optional because binlog UPDATE events may only contain
+      // changed columns (when MySQL binlog-row-image != FULL), producing partial documents.
       const inferredFields: TypesenseFieldConfig[] = columns.map((column) => {
         const inferredType = introspector.inferTypesenseType(column.mysqlType);
         return {
           name: column.name,
           type: inferredType.type,
-          optional: column.nullable || undefined,
+          optional: column.name !== primaryKey ? true : undefined,
           sort: column.name === primaryKey && column.name !== "id" ? true : undefined
         };
       });
