@@ -23,18 +23,30 @@ export class TypesenseDocumentIndexer {
         .documents()
         .import([document], { action: "emplace", dirty_values: "coerce_or_drop" });
     } catch (error: unknown) {
-      // import() throws when any document fails. Extract the per-document result
-      // to decide whether to propagate. If the single document simply had
-      // uncoercible values that were dropped, treat it as a warning not a crash.
-      if (error instanceof Error && "importResults" in error) {
-        const results = (error as any).importResults as Array<{ success: boolean; error?: string }>;
-        const failed = results?.filter((r) => !r.success);
-        if (failed?.length) {
-          const reason = failed[0]?.error ?? "unknown";
-          throw new Error(`Typesense import failed for document ${document.id}: ${reason}`);
-        }
+      if (!(error instanceof Error && "importResults" in error)) {
+        throw error;
       }
-      throw error;
+
+      const results = (error as any).importResults as Array<{ success: boolean; error?: string }>;
+      const reason = results?.find((r) => !r.success)?.error ?? "";
+
+      // Missing required field → partial binlog event. Fall back to partial update
+      // on the existing document; if it doesn't exist yet (404), skip silently —
+      // the document will be created during the next initial sync or full-row event.
+      if (reason.includes("not found in the document")) {
+        try {
+          await this.client.collections(table.collection).documents(document.id).update(document);
+        } catch (updateError: unknown) {
+          const status = (updateError as any)?.httpStatus;
+          if (status === 404) {
+            return; // document not yet indexed — skip partial event
+          }
+          throw updateError;
+        }
+        return;
+      }
+
+      throw new Error(`Typesense import failed for document ${document.id}: ${reason}`);
     }
   }
 
