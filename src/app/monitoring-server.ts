@@ -183,25 +183,129 @@ function dashboardHtml(): string {
   <title>MySQL2Typesense Dashboard</title>
   <style>
     :root {
-      --bg: #f6f4ef;
-      --card: #fffdf8;
-      --line: #dad3c6;
-      --text: #1b1b1b;
-      --muted: #6a665f;
-      --accent: #1f7a5a;
+      --bg: #f2f5f7;
+      --card: #ffffff;
+      --line: #d6dde3;
+      --text: #18212a;
+      --muted: #5d6773;
+      --accent: #0b6b7a;
+      --accent-soft: #e6f4f7;
       --danger: #b42318;
+      --sidebar: #0f1722;
+      --sidebar-text: #d7e2ee;
+      --sidebar-active: #16485e;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       font-family: "Segoe UI", "Helvetica Neue", sans-serif;
       color: var(--text);
-      background: radial-gradient(circle at 20% 10%, #fff 0%, var(--bg) 52%);
+      background:
+        radial-gradient(circle at 10% 20%, #ffffff 0%, transparent 35%),
+        radial-gradient(circle at 90% 10%, #e8eef2 0%, transparent 30%),
+        linear-gradient(180deg, #eef2f5 0%, var(--bg) 100%);
     }
-    .wrap {
-      max-width: 1080px;
-      margin: 24px auto;
+    .layout {
+      max-width: 1320px;
+      margin: 20px auto;
       padding: 0 16px;
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+    .sidebar {
+      position: sticky;
+      top: 16px;
+      background: var(--sidebar);
+      color: var(--sidebar-text);
+      border-radius: 14px;
+      border: 1px solid #223246;
+      padding: 14px;
+      max-height: calc(100vh - 32px);
+      overflow: auto;
+    }
+    .brand {
+      font-size: 17px;
+      font-weight: 700;
+      margin: 4px 2px 14px;
+      color: #fff;
+    }
+    .sidebar-state {
+      border: 1px solid #2b3d52;
+      border-radius: 10px;
+      padding: 10px;
+      margin: 0 0 10px;
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--sidebar-text);
+      font-size: 12px;
+    }
+    .mode-pill {
+      display: inline-block;
+      border: 1px solid #37516c;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+    .mode-pill.idle {
+      background: #1e2b39;
+      border-color: #37516c;
+    }
+    .mode-pill.initial {
+      background: #4d3c12;
+      border-color: #9f7a1f;
+      color: #ffedbf;
+    }
+    .mode-pill.realtime {
+      background: #0f3f2a;
+      border-color: #1f7a5a;
+      color: #b7f2da;
+    }
+    .menu {
+      display: grid;
+      gap: 8px;
+    }
+    .menu-item {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      text-align: left;
+      border: 1px solid #2b3d52;
+      background: transparent;
+      color: var(--sidebar-text);
+      border-radius: 10px;
+      padding: 10px;
+      cursor: pointer;
+      transition: background-color .2s ease, border-color .2s ease;
+    }
+    .menu-item:hover {
+      border-color: #3a5673;
+      background: rgba(255, 255, 255, 0.05);
+    }
+    .menu-item.active {
+      background: var(--sidebar-active);
+      border-color: #4f94bc;
+      color: #fff;
+    }
+    .menu-error-badge {
+      min-width: 22px;
+      padding: 1px 7px;
+      border-radius: 999px;
+      background: #3b4f64;
+      color: #fff;
+      font-size: 11px;
+      text-align: center;
+      font-weight: 700;
+    }
+    .menu-error-badge.alert {
+      background: #b42318;
+    }
+    .content {
       display: grid;
       gap: 16px;
     }
@@ -210,6 +314,14 @@ function dashboardHtml(): string {
       border: 1px solid var(--line);
       border-radius: 12px;
       padding: 16px;
+      scroll-margin-top: 12px;
+    }
+    #section-overview {
+      position: sticky;
+      top: 12px;
+      z-index: 7;
+      backdrop-filter: blur(4px);
+      background: rgba(255, 255, 255, 0.92);
     }
     h1 { margin: 0 0 6px; font-size: 28px; }
     h2 { margin: 0 0 10px; font-size: 18px; }
@@ -258,87 +370,130 @@ function dashboardHtml(): string {
     .pill.runtime {
       border-color: var(--accent);
       color: var(--accent);
-      background: #edf8f3;
+      background: var(--accent-soft);
+    }
+    @media (max-width: 980px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+      .sidebar {
+        position: static;
+        max-height: none;
+      }
+      .menu {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      #section-overview {
+        position: static;
+      }
+    }
+    @media (max-width: 640px) {
+      .menu {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="card">
-      <div class="row">
-        <div>
-          <h1>Sync Dashboard</h1>
-          <div class="muted" id="statusLine">Loading...</div>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">Sync Dashboard</div>
+      <div class="sidebar-state">
+        <div id="modePill" class="mode-pill idle">IDLE</div>
+        <div id="menuModeHint">Current mode: idle</div>
+      </div>
+      <div class="menu" id="sideMenu">
+        <button class="menu-item active" data-target="section-overview">Overview</button>
+        <button class="menu-item" data-target="section-metrics">Metrics</button>
+        <button class="menu-item" data-target="section-throughput">Realtime Throughput</button>
+        <button class="menu-item" data-target="section-per-table">Per Table</button>
+        <button class="menu-item" data-target="section-discovered">Discovered Tables</button>
+        <button class="menu-item" data-target="section-collections">Collections</button>
+        <button class="menu-item" data-target="section-errors">
+          <span>Recent Errors</span>
+          <span id="menuErrorCount" class="menu-error-badge">0</span>
+        </button>
+        <button class="menu-item" data-target="section-danger">Danger Zone</button>
+      </div>
+    </aside>
+
+    <main class="content">
+      <section class="card" id="section-overview">
+        <div class="row">
+          <div>
+            <h1>Sync Dashboard</h1>
+            <div class="muted" id="statusLine">Loading...</div>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button id="refreshBtn">Refresh</button>
+          </div>
         </div>
-        <div style="display:flex;gap:8px;">
-          <button id="refreshBtn">Refresh</button>
+      </section>
+
+      <section class="card" id="section-metrics">
+        <h2>Metrics</h2>
+        <div class="grid" id="metrics"></div>
+      </section>
+
+      <section class="card" id="section-throughput">
+        <h2>Realtime Throughput</h2>
+        <div class="chart-wrap">
+          <canvas id="throughputChart" width="1024" height="240"></canvas>
         </div>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>Metrics</h2>
-      <div class="grid" id="metrics"></div>
-    </div>
-
-    <div class="card">
-      <h2>Realtime Throughput</h2>
-      <div class="chart-wrap">
-        <canvas id="throughputChart" width="1024" height="240"></canvas>
-      </div>
-      <div class="legend">
-        <span class="upserts">Upserts / sec</span>
-        <span class="deletes">Deletes / sec</span>
-      </div>
-      <div id="rateSummary" class="muted-note">Loading rates...</div>
-    </div>
-
-    <div class="card">
-      <h2>Per Table</h2>
-      <table>
-        <thead>
-          <tr><th>Table</th><th>Initial Docs</th><th>Upserts</th><th>Deletes</th></tr>
-        </thead>
-        <tbody id="tableStats"></tbody>
-      </table>
-    </div>
-
-    <div class="card">
-      <h2>Auto-Discovered Tables</h2>
-      <div class="muted-note" id="discoveryMode">Loading...</div>
-      <div id="discoveredTables"></div>
-    </div>
-
-    <div class="card">
-      <h2>Typesense Collections</h2>
-      <table>
-        <thead>
-          <tr><th>Name</th><th>Documents</th><th>Action</th></tr>
-        </thead>
-        <tbody id="collections"></tbody>
-      </table>
-    </div>
-
-    <div class="card">
-      <h2>Recent Errors</h2>
-      <table>
-        <thead>
-          <tr><th>Time</th><th>Context</th><th>Message</th></tr>
-        </thead>
-        <tbody id="errors"></tbody>
-      </table>
-    </div>
-
-    <div class="card" style="border-color:#b42318;">
-      <h2 class="danger">Danger Zone</h2>
-      <div class="row">
-        <div>
-          <b>Reset Typesense</b>
-          <div class="muted-note">Xoa het du lieu Typesense, reset checkpoint binlog (Redis/file), dong bo lai tu dau.</div>
+        <div class="legend">
+          <span class="upserts">Upserts / sec</span>
+          <span class="deletes">Deletes / sec</span>
         </div>
-        <button id="resetBtn" class="danger" style="border-color:#b42318;">Reset Typesense</button>
-      </div>
-    </div>
+        <div id="rateSummary" class="muted-note">Loading rates...</div>
+      </section>
+
+      <section class="card" id="section-per-table">
+        <h2>Per Table</h2>
+        <table>
+          <thead>
+            <tr><th>Table</th><th>Initial Docs</th><th>Upserts</th><th>Deletes</th></tr>
+          </thead>
+          <tbody id="tableStats"></tbody>
+        </table>
+      </section>
+
+      <section class="card" id="section-discovered">
+        <h2>Auto-Discovered Tables</h2>
+        <div class="muted-note" id="discoveryMode">Loading...</div>
+        <div id="discoveredTables"></div>
+      </section>
+
+      <section class="card" id="section-collections">
+        <h2>Typesense Collections</h2>
+        <table>
+          <thead>
+            <tr><th>Name</th><th>Documents</th><th>Action</th></tr>
+          </thead>
+          <tbody id="collections"></tbody>
+        </table>
+      </section>
+
+      <section class="card" id="section-errors">
+        <h2>Recent Errors</h2>
+        <table>
+          <thead>
+            <tr><th>Time</th><th>Context</th><th>Message</th></tr>
+          </thead>
+          <tbody id="errors"></tbody>
+        </table>
+      </section>
+
+      <section class="card" id="section-danger" style="border-color:#b42318;">
+        <h2 class="danger">Danger Zone</h2>
+        <div class="row">
+          <div>
+            <b>Reset Typesense</b>
+            <div class="muted-note">Xoa het du lieu Typesense, reset checkpoint binlog (Redis/file), dong bo lai tu dau.</div>
+          </div>
+          <button id="resetBtn" class="danger" style="border-color:#b42318;">Reset Typesense</button>
+        </div>
+      </section>
+    </main>
   </div>
 
   <script>
@@ -536,21 +691,78 @@ function dashboardHtml(): string {
     }
 
     async function refreshAll() {
-      const status = await fetchJson('/api/status');
-      document.getElementById('statusLine').textContent =
-        'Mode: ' + status.mode + ' | Started: ' + status.startedAt + ' | Tables: ' + status.tables.join(', ');
-      renderMetrics(status.counters);
-      renderTableStats(status.perTable);
-      renderErrors(status.recentErrors);
-      drawThroughputChart(status.throughput || []);
-      const latest = (status.throughput || [])[Math.max(0, (status.throughput || []).length - 1)] || { upserts: 0, deletes: 0 };
-      document.getElementById('rateSummary').textContent =
-        'Current: ' + latest.upserts + ' upserts/s, ' + latest.deletes + ' deletes/s';
-      await renderDiscoveredTables();
-      await renderCollections();
+      if (refreshAll.running) {
+        return;
+      }
+      refreshAll.running = true;
+      try {
+        const status = await fetchJson('/api/status');
+        document.getElementById('statusLine').textContent =
+          'Mode: ' + status.mode + ' | Started: ' + status.startedAt + ' | Tables: ' + status.tables.length;
+
+        const modePill = document.getElementById('modePill');
+        const modeHint = document.getElementById('menuModeHint');
+        modePill.className = 'mode-pill ' + status.mode;
+        modePill.textContent = String(status.mode || 'idle').toUpperCase();
+        modeHint.textContent = 'Current mode: ' + status.mode;
+
+        const errorCount = Number(status?.counters?.errors || 0);
+        const menuErrorCount = document.getElementById('menuErrorCount');
+        menuErrorCount.textContent = String(errorCount);
+        menuErrorCount.classList.toggle('alert', errorCount > 0);
+
+        renderMetrics(status.counters);
+        renderTableStats(status.perTable);
+        renderErrors(status.recentErrors);
+        drawThroughputChart(status.throughput || []);
+        const latest = (status.throughput || [])[Math.max(0, (status.throughput || []).length - 1)] || { upserts: 0, deletes: 0 };
+        document.getElementById('rateSummary').textContent =
+          'Current: ' + latest.upserts + ' upserts/s, ' + latest.deletes + ' deletes/s';
+        await renderDiscoveredTables();
+        await renderCollections();
+      } finally {
+        refreshAll.running = false;
+      }
     }
+    refreshAll.running = false;
 
     document.getElementById('refreshBtn').addEventListener('click', refreshAll);
+
+    const menuItems = Array.from(document.querySelectorAll('#sideMenu .menu-item'));
+    const sectionIds = menuItems.map((item) => item.getAttribute('data-target')).filter(Boolean);
+    const sections = sectionIds
+      .map((id) => document.getElementById(id))
+      .filter(Boolean);
+
+    function setActiveMenu(targetId) {
+      menuItems.forEach((item) => {
+        item.classList.toggle('active', item.getAttribute('data-target') === targetId);
+      });
+    }
+
+    menuItems.forEach((item) => {
+      item.addEventListener('click', () => {
+        const targetId = item.getAttribute('data-target');
+        if (!targetId) return;
+        const target = document.getElementById(targetId);
+        if (!target) return;
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        setActiveMenu(targetId);
+      });
+    });
+
+    window.addEventListener('scroll', () => {
+      let activeId = sectionIds[0] || '';
+      for (const section of sections) {
+        const rect = section.getBoundingClientRect();
+        if (rect.top <= 120) {
+          activeId = section.id;
+        }
+      }
+      if (activeId) {
+        setActiveMenu(activeId);
+      }
+    }, { passive: true });
 
     document.getElementById('resetBtn').addEventListener('click', async () => {
       if (!confirm('CANH BAO: Thao tac nay se xoa TOAN BO du lieu Typesense va dong bo lai tu dau. Tiep tuc?')) return;
@@ -571,6 +783,11 @@ function dashboardHtml(): string {
     });
 
     refreshAll();
+    setInterval(() => {
+      refreshAll().catch(() => {
+        // Errors are already visible in UI via API responses and recent errors table.
+      });
+    }, 5000);
   </script>
 </body>
 </html>`;

@@ -70,6 +70,13 @@ export async function bootstrap(): Promise<AppContext> {
   let refreshInProgress = false;
   let monitoringServer: Server | null = null;
 
+  if (autoDatabaseMode && resolvedTables.length === 0) {
+    logger.warn(
+      { configuredDatabase: config.sync.database?.name, mysqlDatabase: config.mysql.database },
+      "No tables found at startup — check that database.name in sync.config.json matches the MySQL database. Tables will be discovered via the 15s interval."
+    );
+  }
+
   const initialSyncService = new InitialSyncService(
     sourceReader,
     collectionManager,
@@ -89,8 +96,22 @@ export async function bootstrap(): Promise<AppContext> {
 
       refreshInProgress = true;
       try {
-        const database = config.sync.database?.name ?? config.mysql.database;
-        const discoveredTables = await introspector.listTables(database);
+        const configuredDatabase = config.sync.database?.name ?? config.mysql.database;
+        let database = configuredDatabase;
+        let discoveredTables = await introspector.listTables(database);
+
+        // If configured database name finds nothing, fall back to the MySQL connection database
+        if (discoveredTables.length === 0 && configuredDatabase !== config.mysql.database) {
+          discoveredTables = await introspector.listTables(config.mysql.database);
+          if (discoveredTables.length > 0) {
+            database = config.mysql.database;
+            logger.warn(
+              { configuredDatabase, fallbackDatabase: database },
+              "Configured database name found no tables, using MySQL connection database as fallback"
+            );
+          }
+        }
+
         const knownTables = new Set(resolvedTables.map((table) => `${table.database}.${table.table}`));
 
         for (const tableName of discoveredTables) {
@@ -229,6 +250,39 @@ export async function bootstrap(): Promise<AppContext> {
           const emptyCheckpoint: BinlogCheckpoint = { updatedAt: new Date().toISOString() };
           await checkpointStore.save(emptyCheckpoint);
 
+          // If no tables are known yet (e.g. startup discovery hasn't run, or DB name mismatch),
+          // do a fresh discovery before re-syncing so reset actually imports data.
+          if (resolvedTables.length === 0 && autoDatabaseMode) {
+            const configuredDatabase = config.sync.database?.name ?? config.mysql.database;
+            let discoveryDatabase = configuredDatabase;
+            let freshTables = await resolveTableConfigs(introspector, config.mysql.database, [], config.sync.database);
+
+            // If configured database.name found nothing, retry with MySQL connection DB
+            if (freshTables.length === 0 && configuredDatabase !== config.mysql.database) {
+              const databaseOnlyConfig = config.sync.database ? { ...config.sync.database, name: config.mysql.database } : undefined;
+              freshTables = await resolveTableConfigs(introspector, config.mysql.database, [], databaseOnlyConfig);
+              if (freshTables.length > 0) {
+                discoveryDatabase = config.mysql.database;
+                logger.warn(
+                  { configuredDatabase, fallbackDatabase: discoveryDatabase },
+                  "Reset: configured database found no tables, using MySQL connection database"
+                );
+              }
+            }
+
+            for (const table of freshTables) {
+              const key = `${table.database}.${table.table}`;
+              const alreadyKnown = new Set(resolvedTables.map((t) => `${t.database}.${t.table}`));
+              if (!alreadyKnown.has(key)) {
+                resolvedTables.push(table);
+                binlogListener.registerTable?.(table);
+                runtimeDiscoveredTables.add(key);
+              }
+            }
+            monitor.setTables(resolvedTables);
+            logger.info({ tableCount: resolvedTables.length }, "Reset: discovered tables for initial sync");
+          }
+
           // Re-run initial sync table-by-table; don't abort all if one table fails.
           for (const table of resolvedTables) {
             try {
@@ -241,6 +295,9 @@ export async function bootstrap(): Promise<AppContext> {
               );
             }
           }
+
+          // Restore realtime mode after reset completes
+          monitor.markMode("realtime");
           return { ok: true };
         } catch (error) {
           monitor.recordError(error, "reset");

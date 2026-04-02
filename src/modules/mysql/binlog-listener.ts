@@ -55,13 +55,19 @@ export class MySqlBinlogListener implements BinlogListener {
 
   async start(onChange: (event: ChangeEvent) => Promise<void>): Promise<void> {
     this.currentCheckpoint = await this.checkpointStore.load();
+    // In auto-database mode, always include the configured database name so ZongJi subscribes
+    // even before tables are dynamically discovered and registered via registerTable().
     const includeSchema = this.config.sync.database && this.config.sync.tables.length === 0
-      ? Array.from(new Set(Array.from(this.tableByKey.values()).map((table) => table.database))).reduce<
-          Record<string, true | string[]>
-        >((accumulator, database) => {
-          accumulator[database] = true;
-          return accumulator;
-        }, {})
+      ? (() => {
+          const dbs = new Set<string>();
+          const cfgDb = (this.config.sync.database as { name?: string } | undefined)?.name;
+          if (cfgDb) dbs.add(cfgDb);
+          for (const table of this.tableByKey.values()) dbs.add(table.database);
+          return Array.from(dbs).reduce<Record<string, true | string[]>>((acc, db) => {
+            acc[db] = true;
+            return acc;
+          }, {});
+        })()
       : Array.from(this.tableByKey.values()).reduce<Record<string, true | string[]>>((accumulator, table) => {
           const current = accumulator[table.database];
           if (Array.isArray(current)) {
@@ -76,6 +82,13 @@ export class MySqlBinlogListener implements BinlogListener {
       { checkpoint: this.currentCheckpoint, includeSchema },
       "Binlog listener starting"
     );
+
+    if (Object.keys(includeSchema).length === 0) {
+      this.logger?.warn(
+        { configDatabase: (this.config.sync.database as { name?: string } | undefined)?.name },
+        "No tables registered yet — binlog will capture all schemas and route events once tables are discovered"
+      );
+    }
 
     await new Promise<void>((resolve, reject) => {
       const handleError = (error: unknown) => {
