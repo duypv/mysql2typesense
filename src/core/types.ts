@@ -95,8 +95,8 @@ export interface DatabaseSyncConfig {
 export interface JoinFieldConfig {
   /** Column name in the MySQL table */
   name: string;
-  /** Typesense join reference — format: "CollectionName.fieldName" */
-  reference: string;
+  /** Typesense join reference — format: "CollectionName.fieldName". Optional when only a type override is needed. */
+  reference?: string;
   /** Accept document even if referenced document does not exist yet */
   async_reference?: boolean;
   /** Override the inferred Typesense field type */

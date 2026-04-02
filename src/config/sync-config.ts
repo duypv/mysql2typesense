@@ -5,26 +5,59 @@ import { z } from "zod";
 
 import type { DatabaseSyncConfig, JoinFieldConfig, SyncConfigFile, TableJoinConfig, TableSyncConfigSeed } from "../core/types.js";
 
-const typesenseFieldTypeSchema = z.enum([
-  "string",
-  "int32",
-  "int64",
-  "float",
-  "bool",
-  "geopoint",
-  "geopolygon",
-  "geopoint[]",
-  "string[]",
-  "int32[]",
-  "int64[]",
-  "float[]",
-  "bool[]",
-  "object",
-  "object[]",
-  "auto",
-  "string*",
-  "image"
-]);
+/** Maps common MySQL / Java type aliases to their Typesense equivalents. */
+const TYPE_ALIASES: Record<string, string> = {
+  // integer variants
+  long: "int64",
+  bigint: "int64",
+  mediumint: "int64",
+  smallint: "int32",
+  tinyint: "int32",
+  integer: "int32",
+  int: "int32",
+  // float variants
+  double: "float",
+  decimal: "float",
+  numeric: "float",
+  real: "float",
+  // string variants
+  varchar: "string",
+  text: "string",
+  char: "string",
+  // bool variants
+  boolean: "bool",
+  bit: "bool"
+};
+
+function normalizeFieldType(v: unknown): unknown {
+  if (typeof v !== "string") return v;
+  const lower = v.toLowerCase();
+  return TYPE_ALIASES[lower] ?? v;
+}
+
+const typesenseFieldTypeSchema = z.preprocess(
+  normalizeFieldType,
+  z.enum([
+    "string",
+    "int32",
+    "int64",
+    "float",
+    "bool",
+    "geopoint",
+    "geopolygon",
+    "geopoint[]",
+    "string[]",
+    "int32[]",
+    "int64[]",
+    "float[]",
+    "bool[]",
+    "object",
+    "object[]",
+    "auto",
+    "string*",
+    "image"
+  ])
+);
 
 const fieldSchema = z.object({
   name: z.string().min(1),
@@ -48,7 +81,8 @@ const joinFieldSchema = z.object({
   reference: z
     .string()
     .min(1)
-    .regex(/^[^.]+\.[^.]+$/, 'reference must be in format "CollectionName.fieldName"'),
+    .regex(/^[^.]+\.[^.]+$/, 'reference must be in format "CollectionName.fieldName"')
+    .optional(),
   async_reference: z.boolean().optional(),
   type: typesenseFieldTypeSchema.optional()
 });

@@ -16,7 +16,7 @@ export class TypesenseCollectionManager {
       const existing = await this.client.collections(table.collection).retrieve();
 
       if (!this.synced.has(table.collection)) {
-        const updates = this.diffOptionalFlags(existing.fields ?? [], fields);
+        const updates = this.diffSchemaChanges(existing.fields ?? [], fields);
         if (updates.length > 0) {
           try {
             await this.client.collections(table.collection).update({ fields: updates as any });
@@ -50,24 +50,65 @@ export class TypesenseCollectionManager {
   }
 
   /**
-   * Returns field patches for fields that should be optional in the desired config
-   * but are currently required in the existing collection.
+   * Returns field patches needed to bring the existing Typesense collection schema in line
+   * with the desired config. Handles two cases:
+   *
+   * 1. `optional` flag mismatch — patch with the same type + optional=true.
+   * 2. Field type mismatch (e.g. int64 → string caused by a join reference config) —
+   *    drop the old field then re-add it with the new type.  Typesense supports both
+   *    operations in a single PATCH via `{ name, drop: true }` + the new field object.
    */
-  private diffOptionalFlags(
-    existing: Array<{ name?: string; type?: string; optional?: boolean }>,
+  private diffSchemaChanges(
+    existing: Array<{ name?: string; type?: string; optional?: boolean; reference?: string }>,
     desired: TypesenseFieldConfig[]
-  ): Array<{ name: string; type: string; optional: boolean }> {
+  ): Array<Record<string, unknown>> {
     const desiredByName = new Map(desired.map((f) => [f.name, f]));
-    const patches: Array<{ name: string; type: string; optional: boolean }> = [];
+    const patches: Array<Record<string, unknown>> = [];
 
     for (const field of existing) {
       if (!field.name || !field.type) continue;
       const want = desiredByName.get(field.name);
-      if (want?.optional === true && !field.optional) {
+      if (!want) continue;
+
+      const typeMismatch = want.type !== field.type;
+      const optionalMismatch = want.optional === true && !field.optional;
+
+      if (typeMismatch) {
+        // Drop the old field and re-add with the correct type.
+        patches.push({ name: field.name, drop: true });
+        patches.push({
+          name: want.name,
+          type: want.type,
+          optional: want.optional ?? true,
+          ...(want.reference !== undefined && { reference: want.reference }),
+          ...(want.async_reference !== undefined && { async_reference: want.async_reference }),
+          ...(want.facet !== undefined && { facet: want.facet }),
+          ...(want.index !== undefined && { index: want.index }),
+          ...(want.sort !== undefined && { sort: want.sort }),
+          ...(want.infix !== undefined && { infix: want.infix })
+        });
+      } else if (optionalMismatch) {
         patches.push({ name: field.name, type: field.type, optional: true });
       }
     }
 
+    // Also add entirely new fields that exist in desired but not in existing.
+    const existingNames = new Set(existing.map((f) => f.name).filter(Boolean));
+    for (const want of desired) {
+      if (!existingNames.has(want.name)) {
+        patches.push({
+          name: want.name,
+          type: want.type,
+          optional: want.optional ?? true,
+          ...(want.reference !== undefined && { reference: want.reference }),
+          ...(want.async_reference !== undefined && { async_reference: want.async_reference }),
+          ...(want.facet !== undefined && { facet: want.facet }),
+          ...(want.index !== undefined && { index: want.index }),
+          ...(want.sort !== undefined && { sort: want.sort }),
+          ...(want.infix !== undefined && { infix: want.infix })
+        });
+      }
+    }
+
     return patches;
-  }
-}
+  }}

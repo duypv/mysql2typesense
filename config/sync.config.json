@@ -13,7 +13,17 @@
         {
           "name": "parentId",
           "reference": "ParentRef.id",
+          "type": "string",
           "async_reference": true
+        }
+      ]
+    },
+    {
+      "table": "ServicePriceHistory",
+      "fields": [
+        {
+          "name": "ServiceID",
+          "type": "string"
         }
       ]
     }

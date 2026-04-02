@@ -197,9 +197,9 @@ function applyJoinFieldConfigs(
     // Typesense v26 join reference fields MUST be type string regardless of MySQL column type.
     // Only override if the user explicitly sets a type in join_configs.
     const resolvedType = joinField.type ?? "string";
-    const patch: Partial<JoinFieldConfig> = {
-      reference: joinField.reference,
+    const patch: Partial<TypesenseFieldConfig> = {
       type: resolvedType,
+      ...(joinField.reference !== undefined && { reference: joinField.reference }),
       ...(joinField.async_reference !== undefined && { async_reference: joinField.async_reference })
     };
 
@@ -210,7 +210,7 @@ function applyJoinFieldConfigs(
         name: joinField.name,
         type: resolvedType,
         optional: true,
-        reference: joinField.reference,
+        ...(joinField.reference !== undefined && { reference: joinField.reference }),
         ...(joinField.async_reference !== undefined && { async_reference: joinField.async_reference })
       });
     }

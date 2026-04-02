@@ -765,17 +765,17 @@ function dashboardHtml(): string {
     }, { passive: true });
 
     document.getElementById('resetBtn').addEventListener('click', async () => {
-      if (!confirm('CANH BAO: Thao tac nay se xoa TOAN BO du lieu Typesense va dong bo lai tu dau. Tiep tuc?')) return;
-      if (!confirm('Xac nhan lan 2: Toan bo du lieu Typesense se bi xoa. Ban chac chan muon tiep tuc?')) return;
+      if (!confirm('WARNING: This action will delete ALL Typesense data and reindex from scratch. Continue?')) return;
+      if (!confirm('Confirm again: All Typesense data will be deleted. Are you sure you want to proceed?')) return;
       const btn = document.getElementById('resetBtn');
       btn.disabled = true;
       btn.textContent = 'Resetting...';
       try {
         await fetchJson('/api/reset', { method: 'POST' });
-        alert('Reset da bat dau. He thong dang dong bo lai du lieu trong nen.');
+        alert('Reset has started. The system is reindexing data in the background.');
         await refreshAll();
       } catch (error) {
-        alert('Reset that bai: ' + error.message);
+        alert('Reset failed: ' + error.message);
       } finally {
         btn.disabled = false;
         btn.textContent = 'Reset Typesense';
