@@ -136,7 +136,9 @@ LOG_LEVEL=info
   "database": {
     "name": "app",
     "excludeFields": ["password", "secret_token"],
-    "infix_string": true
+    "infix_string": true,
+    "json_stringify": ["IDs", "*IDs", "IDs*", "*IDs*"],
+    "facet_fields": ["Status", "*Type*"]
   }
 }
 ```
@@ -147,6 +149,17 @@ Behavior in database auto mode:
 - New tables discovered during runtime are automatically backfilled and added to realtime sync.
 - Fields in `excludeFields` are removed from inferred schema/mapping.
 - `infix_string: true` sets `infix: true` by default for inferred string fields.
+- `json_stringify` marks matching columns as JSON-string source and converts them to Typesense `object` values.
+- `facet_fields` marks matching inferred Typesense fields with `facet: true`.
+
+Pattern rules for `json_stringify` and `facet_fields`:
+
+- `IDs` = exact match
+- `*IDs` = ends with `IDs`
+- `IDs*` = starts with `IDs`
+- `*IDs*` = contains `IDs`
+
+Pattern matching is case-insensitive.
 
 ## Run Commands
 

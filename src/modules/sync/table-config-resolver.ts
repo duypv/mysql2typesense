@@ -1,5 +1,80 @@
-import type { DatabaseSyncConfig, TableSyncConfig, TableSyncConfigSeed, TypesenseFieldConfig } from "../../core/types.js";
+import type {
+  DatabaseSyncConfig,
+  TableSyncConfig,
+  TableSyncConfigSeed,
+  TypesenseFieldConfig
+} from "../../core/types.js";
 import { MysqlSchemaIntrospector } from "../mysql/schema-introspector.js";
+
+function matchesPattern(input: string, pattern: string): boolean {
+  const value = input.toLowerCase();
+  const rule = pattern.toLowerCase();
+
+  const startsWithStar = rule.startsWith("*");
+  const endsWithStar = rule.endsWith("*");
+  const token = rule.replace(/^\*|\*$/g, "");
+
+  if (!startsWithStar && !endsWithStar) {
+    return value === rule;
+  }
+
+  if (startsWithStar && endsWithStar) {
+    return token.length > 0 ? value.includes(token) : false;
+  }
+
+  if (startsWithStar) {
+    return token.length > 0 ? value.endsWith(token) : false;
+  }
+
+  return token.length > 0 ? value.startsWith(token) : false;
+}
+
+function matchesAnyPattern(input: string, patterns: string[]): boolean {
+  return patterns.some((pattern) => matchesPattern(input, pattern));
+}
+
+function applyJsonStringifyMappings(
+  mappings: Array<{
+    source: string;
+    target: string;
+    type: TypesenseFieldConfig["type"];
+    optional?: boolean;
+    sourceFormat?: "plain" | "json" | "csv" | "datetime";
+    timestampResolution?: "seconds" | "milliseconds";
+  }>,
+  patterns: string[]
+) {
+  if (patterns.length === 0) {
+    return mappings;
+  }
+
+  return mappings.map((mapping) => {
+    if (!matchesAnyPattern(mapping.source, patterns)) {
+      return mapping;
+    }
+
+    return {
+      ...mapping,
+      type: "object" as const,
+      sourceFormat: "json" as const
+    };
+  });
+}
+
+function applyFacetRules(fields: TypesenseFieldConfig[], facetPatterns: string[]): TypesenseFieldConfig[] {
+  return fields.map((field) => {
+    const facet = facetPatterns.length > 0 && matchesAnyPattern(field.name, facetPatterns);
+
+    if (!facet) {
+      return field;
+    }
+
+    return {
+      ...field,
+      facet: true
+    };
+  });
+}
 
 function mergeTypesenseFields(
   inferred: TypesenseFieldConfig[],
@@ -58,6 +133,8 @@ export async function resolveTableConfigs(
   const resolvedDefaultDatabase = databaseConfig?.name ?? defaultDatabase;
   const excludedFieldNames = new Set((databaseConfig?.excludeFields ?? []).map((name) => name.toLowerCase()));
   const infixStringEnabled = databaseConfig?.infixString === true;
+  const jsonStringifyPatterns = databaseConfig?.jsonStringify ?? [];
+  const facetPatterns = databaseConfig?.facetFields ?? [];
 
   const effectiveSeeds: TableSyncConfigSeed[] =
     seeds.length > 0
@@ -85,7 +162,7 @@ export async function resolveTableConfigs(
     const primaryKey = seed.primaryKey ?? inferredPrimary;
 
     const configuredMappings = seed.transform?.fieldMappings;
-    const fieldMappings =
+    let fieldMappings =
       configuredMappings && configuredMappings.length > 0
         ? configuredMappings.filter(
             (mapping) =>
@@ -103,6 +180,8 @@ export async function resolveTableConfigs(
               timestampResolution: inferred.sourceFormat === "datetime" ? ("seconds" as const) : undefined
             };
           });
+
+    fieldMappings = applyJsonStringifyMappings(fieldMappings, jsonStringifyPatterns);
 
     const configuredFields = seed.typesense?.fields?.filter(
       (field) => !excludedFieldNames.has(field.name.toLowerCase())
@@ -146,6 +225,7 @@ export async function resolveTableConfigs(
       fields.unshift({ name: "id", type: "string" });
     }
 
+    fields = applyFacetRules(fields, facetPatterns);
     fields = withStringInfixDefaults(fields, infixStringEnabled);
 
     resolved.push({

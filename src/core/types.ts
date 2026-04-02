@@ -84,6 +84,8 @@ export interface DatabaseSyncConfig {
   name: string;
   excludeFields?: string[];
   infixString?: boolean;
+  jsonStringify?: string[];
+  facetFields?: string[];
 }
 
 export interface SyncConfigFile {

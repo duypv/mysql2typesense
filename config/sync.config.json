@@ -2,6 +2,8 @@
   "database": {
     "name": "app",
     "excludeFields": ["password", "secret_token"],
-    "infix_string": true
+    "infix_string": true,
+    "json_stringify": ["*IDs"],
+    "facet_fields": ["Status", "*Type*"]
   }
 }

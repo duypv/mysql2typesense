@@ -80,7 +80,9 @@ const syncConfigSchema = z.object({
     .object({
       name: z.string().min(1),
       excludeFields: z.array(z.string().min(1)).optional(),
-      infix_string: z.boolean().optional()
+      infix_string: z.boolean().optional(),
+      json_stringify: z.array(z.string().min(1)).optional(),
+      facet_fields: z.array(z.string().min(1)).optional()
     })
     .optional(),
   tables: z.array(tableSchema).optional()
@@ -102,7 +104,9 @@ export function loadSyncConfig(configPath: string): LoadedSyncConfig {
         ? {
             name: result.database.name,
             excludeFields: result.database.excludeFields,
-            infixString: result.database.infix_string
+            infixString: result.database.infix_string,
+            jsonStringify: result.database.json_stringify,
+            facetFields: result.database.facet_fields
           }
         : undefined,
       tables: result.tables ?? []
