@@ -55,7 +55,7 @@ function applyJsonStringifyMappings(
 
     return {
       ...mapping,
-      type: "object" as const,
+      type: "auto" as const,
       sourceFormat: "json" as const
     };
   });

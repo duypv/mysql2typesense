@@ -787,7 +787,7 @@ function dashboardHtml(): string {
       refreshAll().catch(() => {
         // Errors are already visible in UI via API responses and recent errors table.
       });
-    }, 5000);
+    }, 1000 * 30);
   </script>
 </body>
 </html>`;

@@ -55,7 +55,22 @@ export class ConfigDrivenTransformer implements DocumentTransformer {
   private normalizeSourceValue(value: unknown, mapping: TransformFieldMapping): unknown {
     switch (mapping.sourceFormat ?? "plain") {
       case "json":
-        return typeof value === "string" ? JSON.parse(value) : value;
+        if (typeof value !== "string") {
+          return value;
+        }
+
+        const trimmed = value.trim();
+        if (trimmed === "") {
+          return null;
+        }
+
+        try {
+          return JSON.parse(trimmed);
+        } catch {
+          // Some source columns matched by json_stringify may contain plain scalar/csv text
+          // in legacy rows. Keep raw text instead of failing the whole row.
+          return trimmed;
+        }
       case "csv":
         return Array.isArray(value)
           ? value
