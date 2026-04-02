@@ -56,7 +56,7 @@ export class ConfigDrivenTransformer implements DocumentTransformer {
     switch (mapping.sourceFormat ?? "plain") {
       case "json":
         if (typeof value !== "string") {
-          return value;
+          return this.sanitizeJsonForTypesense(value);
         }
 
         const trimmed = value.trim();
@@ -65,7 +65,7 @@ export class ConfigDrivenTransformer implements DocumentTransformer {
         }
 
         try {
-          return JSON.parse(trimmed);
+          return this.sanitizeJsonForTypesense(JSON.parse(trimmed));
         } catch {
           // Some source columns matched by json_stringify may contain plain scalar/csv text
           // in legacy rows. Keep raw text instead of failing the whole row.
@@ -171,5 +171,40 @@ export class ConfigDrivenTransformer implements DocumentTransformer {
     }
 
     throw new Error(`Cannot coerce value \"${String(value)}\" to object`);
+  }
+
+  private sanitizeJsonForTypesense(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      if (value.length === 0) {
+        return value;
+      }
+
+      const sanitizedItems = value.map((item) => this.sanitizeJsonForTypesense(item));
+
+      const kinds = new Set(sanitizedItems.map((item) => this.jsonKind(item)));
+      if (kinds.size <= 1) {
+        return sanitizedItems;
+      }
+
+      // Typesense nested typing is strict for array element types.
+      // Normalize mixed arrays to string[] to avoid schema conflicts.
+      return sanitizedItems.map((item) => (typeof item === "string" ? item : JSON.stringify(item)));
+    }
+
+    if (typeof value === "object" && value !== null) {
+      const output: Record<string, unknown> = {};
+      for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+        output[key] = this.sanitizeJsonForTypesense(nested);
+      }
+      return output;
+    }
+
+    return value;
+  }
+
+  private jsonKind(value: unknown): string {
+    if (value === null) return "null";
+    if (Array.isArray(value)) return "array";
+    return typeof value;
   }
 }

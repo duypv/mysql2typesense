@@ -76,6 +76,30 @@ function applyFacetRules(fields: TypesenseFieldConfig[], facetPatterns: string[]
   });
 }
 
+function applyMappingTypeOverrides(
+  fields: TypesenseFieldConfig[],
+  mappings: Array<{ target: string; type: TypesenseFieldConfig["type"]; optional?: boolean }>
+): TypesenseFieldConfig[] {
+  if (mappings.length === 0) {
+    return fields;
+  }
+
+  const mappingByTarget = new Map(mappings.map((mapping) => [mapping.target, mapping]));
+
+  return fields.map((field) => {
+    const mapping = mappingByTarget.get(field.name);
+    if (!mapping) {
+      return field;
+    }
+
+    return {
+      ...field,
+      type: mapping.type,
+      optional: mapping.optional ?? field.optional
+    };
+  });
+}
+
 function mergeTypesenseFields(
   inferred: TypesenseFieldConfig[],
   configured: TypesenseFieldConfig[] | undefined
@@ -245,6 +269,8 @@ export async function resolveTableConfigs(
     if (!fields.some((field) => field.name === "id")) {
       fields.unshift({ name: "id", type: "string" });
     }
+
+    fields = applyMappingTypeOverrides(fields, fieldMappings);
 
     fields = applyFacetRules(fields, facetPatterns);
     fields = withStringInfixDefaults(fields, infixStringEnabled);
