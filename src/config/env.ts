@@ -49,6 +49,7 @@ export function loadConfig(): AppConfig {
       batchSize: env.SYNC_BATCH_SIZE,
       database: syncConfig.database,
       tables: syncConfig.tables,
+      joinConfigs: syncConfig.joinConfigs,
       retry: {
         maxAttempts: env.RETRY_MAX_ATTEMPTS,
         baseDelayMs: env.RETRY_BASE_DELAY_MS

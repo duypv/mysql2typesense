@@ -31,6 +31,10 @@ export interface TypesenseFieldConfig {
   num_dim?: number;
   store?: boolean;
   range_index?: boolean;
+  /** Typesense join reference — format: "CollectionName.fieldName" */
+  reference?: string;
+  /** If true the document is accepted even if the referenced document does not exist yet */
+  async_reference?: boolean;
   [key: string]: unknown;
 }
 
@@ -88,9 +92,27 @@ export interface DatabaseSyncConfig {
   facetFields?: string[];
 }
 
+export interface JoinFieldConfig {
+  /** Column name in the MySQL table */
+  name: string;
+  /** Typesense join reference — format: "CollectionName.fieldName" */
+  reference: string;
+  /** Accept document even if referenced document does not exist yet */
+  async_reference?: boolean;
+  /** Override the inferred Typesense field type */
+  type?: TypesenseFieldType;
+}
+
+export interface TableJoinConfig {
+  /** MySQL table name (case-insensitive match) */
+  table: string;
+  fields: JoinFieldConfig[];
+}
+
 export interface SyncConfigFile {
   database?: DatabaseSyncConfig;
   tables?: TableSyncConfigSeed[];
+  join_configs?: TableJoinConfig[];
 }
 
 export interface SyncDocument extends Record<string, unknown> {
@@ -131,6 +153,7 @@ export interface AppConfig {
     database?: DatabaseSyncConfig;
     tables: TableSyncConfigSeed[];
     retry: RetryConfig;
+    joinConfigs: TableJoinConfig[];
   };
   typesense: {
     host: string;

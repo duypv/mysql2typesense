@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 import { z } from "zod";
 
-import type { DatabaseSyncConfig, SyncConfigFile, TableSyncConfigSeed } from "../core/types.js";
+import type { DatabaseSyncConfig, JoinFieldConfig, SyncConfigFile, TableJoinConfig, TableSyncConfigSeed } from "../core/types.js";
 
 const typesenseFieldTypeSchema = z.enum([
   "string",
@@ -38,7 +38,24 @@ const fieldSchema = z.object({
   stem: z.boolean().optional(),
   num_dim: z.number().int().positive().optional(),
   store: z.boolean().optional(),
-  range_index: z.boolean().optional()
+  range_index: z.boolean().optional(),
+  reference: z.string().optional(),
+  async_reference: z.boolean().optional()
+});
+
+const joinFieldSchema = z.object({
+  name: z.string().min(1),
+  reference: z
+    .string()
+    .min(1)
+    .regex(/^[^.]+\.[^.]+$/, 'reference must be in format "CollectionName.fieldName"'),
+  async_reference: z.boolean().optional(),
+  type: typesenseFieldTypeSchema.optional()
+});
+
+const tableJoinConfigSchema = z.object({
+  table: z.string().min(1),
+  fields: z.array(joinFieldSchema).min(1)
 });
 
 const mappingSchema = z.object({
@@ -85,12 +102,14 @@ const syncConfigSchema = z.object({
       facet_fields: z.array(z.string().min(1)).optional()
     })
     .optional(),
-  tables: z.array(tableSchema).optional()
+  tables: z.array(tableSchema).optional(),
+  join_configs: z.array(tableJoinConfigSchema).optional()
 });
 
 export interface LoadedSyncConfig {
   database?: DatabaseSyncConfig;
   tables: TableSyncConfigSeed[];
+  joinConfigs: TableJoinConfig[];
 }
 
 export function loadSyncConfig(configPath: string): LoadedSyncConfig {
@@ -99,6 +118,18 @@ export function loadSyncConfig(configPath: string): LoadedSyncConfig {
     const content = readFileSync(absolutePath, "utf8");
     const parsed = JSON.parse(content) as SyncConfigFile;
     const result = syncConfigSchema.parse(parsed);
+    const joinConfigs: TableJoinConfig[] = (result.join_configs ?? []).map((jc) => ({
+      table: jc.table,
+      fields: jc.fields.map(
+        (f): JoinFieldConfig => ({
+          name: f.name,
+          reference: f.reference,
+          async_reference: f.async_reference,
+          type: f.type
+        })
+      )
+    }));
+
     return {
       database: result.database
         ? {
@@ -109,12 +140,13 @@ export function loadSyncConfig(configPath: string): LoadedSyncConfig {
             facetFields: result.database.facet_fields
           }
         : undefined,
-      tables: result.tables ?? []
+      tables: result.tables ?? [],
+      joinConfigs
     };
   } catch (error) {
     const nodeError = error as NodeJS.ErrnoException;
     if (nodeError.code === "ENOENT") {
-      return { tables: [] };
+      return { tables: [], joinConfigs: [] };
     }
 
     throw error;

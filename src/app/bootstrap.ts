@@ -51,7 +51,8 @@ export async function bootstrap(): Promise<AppContext> {
     introspector,
     config.mysql.database,
     config.sync.tables,
-    config.sync.database
+    config.sync.database,
+    config.sync.joinConfigs
   );
   const startupDiscoveredTables = new Set(resolvedTables.map((table) => `${table.database}.${table.table}`));
   const runtimeDiscoveredTables = new Set<string>();
@@ -124,7 +125,8 @@ export async function bootstrap(): Promise<AppContext> {
             introspector,
             config.mysql.database,
             [{ database, table: tableName }],
-            config.sync.database
+            config.sync.database,
+            config.sync.joinConfigs
           );
 
           if (!resolved) {
@@ -199,7 +201,8 @@ export async function bootstrap(): Promise<AppContext> {
           introspector,
           config.mysql.database,
           [{ database: existingTable.database, table: existingTable.table, collection: existingTable.collection }],
-          config.sync.database
+          config.sync.database,
+          config.sync.joinConfigs
         );
 
         if (!freshConfig) {
@@ -246,6 +249,9 @@ export async function bootstrap(): Promise<AppContext> {
             } catch { /* ignore */ }
           }
 
+          // Clear manager schema cache so the next ensureCollection rebuilds each collection fresh
+          collectionManager.clearSyncedCache();
+
           // Reset checkpoint so binlog listener starts from current position on next restart
           const emptyCheckpoint: BinlogCheckpoint = { updatedAt: new Date().toISOString() };
           await checkpointStore.save(emptyCheckpoint);
@@ -255,12 +261,12 @@ export async function bootstrap(): Promise<AppContext> {
           if (resolvedTables.length === 0 && autoDatabaseMode) {
             const configuredDatabase = config.sync.database?.name ?? config.mysql.database;
             let discoveryDatabase = configuredDatabase;
-            let freshTables = await resolveTableConfigs(introspector, config.mysql.database, [], config.sync.database);
+            let freshTables = await resolveTableConfigs(introspector, config.mysql.database, [], config.sync.database, config.sync.joinConfigs);
 
             // If configured database.name found nothing, retry with MySQL connection DB
             if (freshTables.length === 0 && configuredDatabase !== config.mysql.database) {
               const databaseOnlyConfig = config.sync.database ? { ...config.sync.database, name: config.mysql.database } : undefined;
-              freshTables = await resolveTableConfigs(introspector, config.mysql.database, [], databaseOnlyConfig);
+              freshTables = await resolveTableConfigs(introspector, config.mysql.database, [], databaseOnlyConfig, config.sync.joinConfigs);
               if (freshTables.length > 0) {
                 discoveryDatabase = config.mysql.database;
                 logger.warn(
@@ -283,7 +289,20 @@ export async function bootstrap(): Promise<AppContext> {
             logger.info({ tableCount: resolvedTables.length }, "Reset: discovered tables for initial sync");
           }
 
-          // Re-run initial sync table-by-table; don't abort all if one table fails.
+          // Phase 1: pre-create all collection schemas so that referenced/parent collections
+          // exist before child collections import their documents (avoids join reference errors).
+          for (const table of resolvedTables) {
+            try {
+              await collectionManager.ensureCollection(table);
+            } catch (error) {
+              logger.warn(
+                { error, table: `${table.database}.${table.table}` },
+                "Reset phase-1: schema pre-creation failed, will retry during data import"
+              );
+            }
+          }
+
+          // Phase 2: import data table-by-table; individual failures are isolated.
           for (const table of resolvedTables) {
             try {
               await initialSyncService.run([table]);

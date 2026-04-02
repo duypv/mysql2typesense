@@ -10,7 +10,10 @@
     "dev:realtime": "tsx src/app/realtime-sync.ts",
     "sync:initial": "tsx src/app/initial-sync.ts",
     "sync:realtime": "tsx src/app/realtime-sync.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "engines": {
     "node": ">=18"
@@ -26,7 +29,9 @@
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
+    "@vitest/coverage-v8": "^4.1.2",
     "tsx": "^4.19.3",
-    "typescript": "^5.8.2"
+    "typescript": "^5.8.2",
+    "vitest": "^4.1.2"
   }
 }

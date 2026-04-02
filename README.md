@@ -161,6 +161,73 @@ Pattern rules for `json_stringify` and `facet_fields`:
 
 Pattern matching is case-insensitive.
 
+### Cross-Table Joins (Reference Fields)
+
+Typesense supports [join queries](https://typesense.org/docs/26.0/api/joins.html) across collections using `reference` fields. You can configure reference fields per table via a top-level `join_configs` array in `sync.config.json`. This works in both database auto mode and explicit tables mode.
+
+**Config format:**
+
+```json
+{
+  "database": {
+    "name": "app",
+    "infix_string": true
+  },
+  "join_configs": [
+    {
+      "table": "ServicePriceHistory",
+      "fields": [
+        {
+          "name": "ServiceID",
+          "reference": "Service.ServiceID",
+          "async_reference": true
+        }
+      ]
+    },
+    {
+      "table": "Appointment",
+      "fields": [
+        {
+          "name": "DoctorID",
+          "reference": "Doctor.DoctorID",
+          "async_reference": true
+        },
+        {
+          "name": "PatientID",
+          "reference": "Patient.PatientID"
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Field options for `join_configs[].fields[]`:**
+
+| Field             | Type    | Required | Description |
+|-------------------|---------|----------|-------------|
+| `name`            | string  | Yes      | Column name in the table (must match MySQL column name exactly). |
+| `reference`       | string  | Yes      | `"CollectionName.fieldName"` — the Typesense collection and field to join against. |
+| `async_reference` | boolean | No       | If `true`, the document is accepted even if the referenced document does not exist yet. Recommended when importing tables in uncertain order. |
+| `type`            | string  | No       | Override Typesense field type. **Defaults to `string`** — Typesense v26 requires join reference fields to be `string`. Only change this if you are sure both collections use the same non-string type for the reference field. |
+
+**Important notes:**
+
+- `reference` uses **Typesense collection names**, not MySQL table names. By default collection name equals table name (configurable via `tables[].collection`).
+- Both collections must be synced by this service.
+- The referenced field must exist and be indexed in the target collection.
+- `async_reference: true` is recommended for most cases to avoid import failures when tables are synced in different order.
+- Applies to **any table** — works in database auto mode and for tables in `tables[]`.
+
+**Querying joined collections (Typesense query syntax):**
+
+```
+GET /collections/ServicePriceHistory/documents/search
+  ?q=*
+  &query_by=ServiceCode
+  &include_fields=ServiceID,$Service(ServiceName,ServiceCode,Price) AS service
+```
+
 ## Run Commands
 
 Initial sync only:

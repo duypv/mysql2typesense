@@ -5,5 +5,17 @@
     "infix_string": true,
     "json_stringify": ["*IDs"],
     "facet_fields": ["Status", "*Type*"]
-  }
+  },
+  "join_configs": [
+    {
+      "table": "ChildJoin",
+      "fields": [
+        {
+          "name": "parentId",
+          "reference": "ParentRef.id",
+          "async_reference": true
+        }
+      ]
+    }
+  ]
 }

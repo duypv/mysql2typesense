@@ -41,6 +41,15 @@ export class TypesenseCollectionManager {
   }
 
   /**
+   * Clears the internal cache of synced collections.
+   * Call this after deleting collections (e.g. during a full reset) so that
+   * the next `ensureCollection` call treats each collection as new.
+   */
+  clearSyncedCache(): void {
+    this.synced.clear();
+  }
+
+  /**
    * Returns field patches for fields that should be optional in the desired config
    * but are currently required in the existing collection.
    */

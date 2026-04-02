@@ -1,7 +1,10 @@
 import type {
   DatabaseSyncConfig,
+  JoinFieldConfig,
+  TableJoinConfig,
   TableSyncConfig,
   TableSyncConfigSeed,
+  TransformFieldMapping,
   TypesenseFieldConfig
 } from "../../core/types.js";
 import { MysqlSchemaIntrospector } from "../mysql/schema-introspector.js";
@@ -169,11 +172,87 @@ function withStringInfixDefaults(fields: TypesenseFieldConfig[], enabled: boolea
   });
 }
 
+/**
+ * Apply join reference configs: for fields listed in joinConfigs for this table,
+ * set `reference` (and optionally `async_reference` and `type`) on the matching field.
+ * If the field doesn't exist in the schema yet, add it as an optional int64 field.
+ */
+function applyJoinFieldConfigs(
+  fields: TypesenseFieldConfig[],
+  table: string,
+  joinConfigs: TableJoinConfig[]
+): TypesenseFieldConfig[] {
+  const tableJoin = joinConfigs.find(
+    (jc) => jc.table.toLowerCase() === table.toLowerCase()
+  );
+
+  if (!tableJoin || tableJoin.fields.length === 0) {
+    return fields;
+  }
+
+  const result = [...fields];
+
+  for (const joinField of tableJoin.fields) {
+    const idx = result.findIndex((f) => f.name.toLowerCase() === joinField.name.toLowerCase());
+    // Typesense v26 join reference fields MUST be type string regardless of MySQL column type.
+    // Only override if the user explicitly sets a type in join_configs.
+    const resolvedType = joinField.type ?? "string";
+    const patch: Partial<JoinFieldConfig> = {
+      reference: joinField.reference,
+      type: resolvedType,
+      ...(joinField.async_reference !== undefined && { async_reference: joinField.async_reference })
+    };
+
+    if (idx !== -1) {
+      result[idx] = { ...result[idx], ...patch };
+    } else {
+      result.push({
+        name: joinField.name,
+        type: resolvedType,
+        optional: true,
+        reference: joinField.reference,
+        ...(joinField.async_reference !== undefined && { async_reference: joinField.async_reference })
+      });
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Apply join reference configs to field mappings so the transformer coerces values
+ * to the correct type (e.g. string) before indexing.
+ */
+function applyJoinMappingOverrides(
+  mappings: TransformFieldMapping[],
+  table: string,
+  joinConfigs: TableJoinConfig[]
+): TransformFieldMapping[] {
+  const tableJoin = joinConfigs.find(
+    (jc) => jc.table.toLowerCase() === table.toLowerCase()
+  );
+
+  if (!tableJoin || tableJoin.fields.length === 0) {
+    return mappings;
+  }
+
+  return mappings.map((mapping) => {
+    const joinField = tableJoin.fields.find(
+      (jf) => jf.name.toLowerCase() === mapping.source.toLowerCase()
+    );
+    if (!joinField) return mapping;
+    // Default to string — Typesense join reference fields must be strings.
+    const resolvedType = joinField.type ?? "string";
+    return { ...mapping, type: resolvedType };
+  });
+}
+
 export async function resolveTableConfigs(
   introspector: MysqlSchemaIntrospector,
   defaultDatabase: string,
   seeds: TableSyncConfigSeed[],
-  databaseConfig?: DatabaseSyncConfig
+  databaseConfig?: DatabaseSyncConfig,
+  joinConfigs: TableJoinConfig[] = []
 ): Promise<TableSyncConfig[]> {
   const resolvedDefaultDatabase = databaseConfig?.name ?? defaultDatabase;
   const excludedFieldNames = new Set((databaseConfig?.excludeFields ?? []).map((name) => name.toLowerCase()));
@@ -271,6 +350,9 @@ export async function resolveTableConfigs(
     }
 
     fields = applyMappingTypeOverrides(fields, fieldMappings);
+
+    fields = applyJoinFieldConfigs(fields, table, joinConfigs);
+    fieldMappings = applyJoinMappingOverrides(fieldMappings, table, joinConfigs);
 
     fields = applyFacetRules(fields, facetPatterns);
     fields = withStringInfixDefaults(fields, infixStringEnabled);
