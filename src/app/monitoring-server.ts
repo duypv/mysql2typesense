@@ -166,12 +166,10 @@ async function handleResetRequest(
     return false;
   }
 
-  const result = await resetTypesense();
-  if (result.ok) {
-    sendJson(response, 200, { ok: true });
-  } else {
-    sendJson(response, 500, { ok: false, error: result.reason ?? "Reset failed" });
-  }
+  resetTypesense().catch(() => {
+    // Error is recorded by reset implementation in monitor/logs.
+  });
+  sendJson(response, 202, { ok: true, message: "Reset started" });
 
   return true;
 }
@@ -562,7 +560,7 @@ function dashboardHtml(): string {
       btn.textContent = 'Resetting...';
       try {
         await fetchJson('/api/reset', { method: 'POST' });
-        alert('Reset Typesense thanh cong. He thong dang dong bo lai du lieu.');
+        alert('Reset da bat dau. He thong dang dong bo lai du lieu trong nen.');
         await refreshAll();
       } catch (error) {
         alert('Reset that bai: ' + error.message);

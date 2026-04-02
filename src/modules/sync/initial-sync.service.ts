@@ -28,9 +28,29 @@ export class InitialSyncService {
       for await (const batch of this.sourceReader.scanTable(table, table.batchSize ?? this.batchSize)) {
         try {
           const documents = await Promise.all(batch.map((row) => this.transformer.toDocument(row, table)));
-          await withRetry(() => this.documentIndexer.importDocuments(table, documents), this.retryConfig);
-          this.monitor.recordInitialBatch(tableKey, documents.length);
-          this.logger.info({ table: table.table, imported: documents.length }, "Initial sync batch imported");
+          let imported = documents.length;
+
+          try {
+            await this.documentIndexer.importDocuments(table, documents);
+          } catch (bulkError) {
+            this.logger.warn(
+              { error: bulkError, table: table.table, batchSize: documents.length },
+              "Bulk import failed, falling back to per-document upsert"
+            );
+
+            imported = 0;
+            for (const document of documents) {
+              try {
+                await withRetry(() => this.documentIndexer.upsertDocument(table, document), this.retryConfig);
+                imported += 1;
+              } catch (documentError) {
+                this.monitor.recordError(documentError, `initial:${tableKey}:document:${document.id}`);
+              }
+            }
+          }
+
+          this.monitor.recordInitialBatch(tableKey, imported);
+          this.logger.info({ table: table.table, imported }, "Initial sync batch imported");
         } catch (error) {
           this.monitor.recordError(error, `initial:${tableKey}`);
           throw error;

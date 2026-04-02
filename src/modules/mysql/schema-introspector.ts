@@ -70,7 +70,7 @@ export class MysqlSchemaIntrospector {
     }
 
     if (/(json)/.test(type)) {
-      return { type: "object", sourceFormat: "json" };
+      return { type: "auto", sourceFormat: "json" };
     }
 
     if (/(set)/.test(type)) {

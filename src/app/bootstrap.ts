@@ -229,8 +229,18 @@ export async function bootstrap(): Promise<AppContext> {
           const emptyCheckpoint: BinlogCheckpoint = { updatedAt: new Date().toISOString() };
           await checkpointStore.save(emptyCheckpoint);
 
-          // Re-run initial sync for all tables
-          await initialSyncService.run(resolvedTables);
+          // Re-run initial sync table-by-table; don't abort all if one table fails.
+          for (const table of resolvedTables) {
+            try {
+              await initialSyncService.run([table]);
+            } catch (error) {
+              monitor.recordError(error, `reset:${table.database}.${table.table}`);
+              logger.error(
+                { error, table: `${table.database}.${table.table}` },
+                "Reset sync failed for table, continuing with remaining tables"
+              );
+            }
+          }
           return { ok: true };
         } catch (error) {
           monitor.recordError(error, "reset");

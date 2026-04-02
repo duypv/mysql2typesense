@@ -94,7 +94,10 @@ function mergeTypesenseFields(
 
 function inferDefaultSortingField(fields: TypesenseFieldConfig[]): string | undefined {
   const sortableNumeric = fields.filter(
-    (field) => field.name !== "id" && (field.type === "int64" || field.type === "int32" || field.type === "float")
+    (field) =>
+      field.name !== "id" &&
+      field.optional !== true &&
+      (field.type === "int64" || field.type === "int32" || field.type === "float")
   );
 
   const preferred = sortableNumeric.find((field) => field.name === "updated_at_ts" || field.name === "created_at_ts");
@@ -108,6 +111,24 @@ function inferDefaultSortingField(fields: TypesenseFieldConfig[]): string | unde
   }
 
   return sortableNumeric[0]?.name;
+}
+
+function resolveValidatedDefaultSortingField(
+  fields: TypesenseFieldConfig[],
+  configuredDefault?: string
+): string | undefined {
+  if (configuredDefault) {
+    const field = fields.find((item) => item.name === configuredDefault);
+    if (
+      field &&
+      field.optional !== true &&
+      (field.type === "int64" || field.type === "int32" || field.type === "float")
+    ) {
+      return configuredDefault;
+    }
+  }
+
+  return inferDefaultSortingField(fields);
 }
 
 function withStringInfixDefaults(fields: TypesenseFieldConfig[], enabled: boolean): TypesenseFieldConfig[] {
@@ -236,7 +257,7 @@ export async function resolveTableConfigs(
       batchSize: seed.batchSize,
       typesense: {
         fields,
-        defaultSortingField: seed.typesense?.defaultSortingField ?? inferDefaultSortingField(fields),
+        defaultSortingField: resolveValidatedDefaultSortingField(fields, seed.typesense?.defaultSortingField),
         enableNestedFields: seed.typesense?.enableNestedFields ?? true,
         tokenSeparators: seed.typesense?.tokenSeparators,
         symbolsToIndex: seed.typesense?.symbolsToIndex
