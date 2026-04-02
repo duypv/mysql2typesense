@@ -31,7 +31,7 @@ services:
       retries: 20
 
   typesense:
-    image: typesense/typesense:26.0
+    image: typesense/typesense:28.0
     command:
       - --data-dir=/data
       - --api-key=xyz

@@ -43,7 +43,7 @@ The service runs in two phases:
 
 - Node.js 18+
 - MySQL 5.7+ or 8.0+ with ROW binlog
-- Typesense server with API key
+- Typesense 28.0 server with API key
 - Redis (optional but recommended for checkpoints)
 
 ## MySQL Requirements
