@@ -1,0 +1,81 @@
+{
+  "database": {
+    "name": "app_mock",
+    "excludeFields": [
+      "password",
+      "secret_token"
+    ],
+    "infix_string": true,
+    "json_stringify": [
+      "*IDs"
+    ],
+    "facet_fields": [
+      "Status",
+      "Type",
+      "*Type",
+      "Group",
+      "*Group",
+      "Category",
+      "*ID",
+      "*IDs",
+      "*By",
+      "Gender",
+      "MedicalServiceID",
+      "BYTType",
+      "BYTGroup",
+      "Integrated",
+      "ExecPlace",
+      "IsIVF",
+      "PropertyApply",
+      "Default",
+      "BankAccountNumber",
+      "BankAccountName",
+      "Floor",
+      "Services",
+      "Consignment",
+      "Unit",
+      "WeekNumber"
+    ]
+  },
+  "join_configs": [
+    {
+      "table": "ServicePriceHistory",
+      "fields": [
+        {
+          "name": "ServiceID",
+          "type": "int64",
+          "reference": "Service.ServiceID",
+          "async_reference": true
+        }
+      ]
+    },
+    {
+      "table": "DrugPriceHistory",
+      "fields": [
+        {
+          "name": "DrugID",
+          "type": "int64",
+          "reference": "Drug.DrugID",
+          "async_reference": true
+        }
+      ]
+    },
+    {
+      "table": "Appointment",
+      "fields": [
+        {
+          "name": "DoctorID",
+          "type": "int64",
+          "reference": "Doctor.DoctorID",
+          "async_reference": true
+        },
+        {
+          "name": "PatientID",
+          "type": "int64",
+          "reference": "Patient.PatientID",
+          "async_reference": true
+        }
+      ]
+    }
+  ]
+}

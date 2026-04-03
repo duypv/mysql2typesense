@@ -3,6 +3,9 @@ import { execSync } from "node:child_process";
 
 const TS_BASE = process.env.TS_BASE ?? "http://127.0.0.1:8108";
 const TS_API_KEY = process.env.TS_API_KEY ?? "xyz";
+const MOCK_SYNC_CONFIG_PATH = process.env.MOCK_SYNC_CONFIG_PATH ?? "config/sync.mock-facet-join.config.json";
+const EXPECTED_JOIN_TYPE = process.env.EXPECTED_JOIN_TYPE ?? "string";
+const CHECK_APPOINTMENT_JOIN = (process.env.CHECK_APPOINTMENT_JOIN ?? "true").toLowerCase() !== "false";
 const headers = { "X-TYPESENSE-API-KEY": TS_API_KEY };
 
 const pool = await mysql.createPool({
@@ -175,7 +178,7 @@ async function main() {
       TS_API_KEY: TS_API_KEY,
       CHECKPOINT_DRIVER: "file",
       CHECKPOINT_FILE: "storage/checkpoints/mock-facet-join-checkpoint.json",
-      SYNC_CONFIG_PATH: "config/sync.mock-facet-join.config.json",
+      SYNC_CONFIG_PATH: MOCK_SYNC_CONFIG_PATH,
       MONITORING_ENABLED: "false",
     },
   });
@@ -195,14 +198,19 @@ async function main() {
   const checks = [
     ["ServicePriceHistory.ServiceID is facet", spServiceId?.facet === true],
     ["ServicePriceHistory.ServiceID reference=Service.ServiceID", spServiceId?.reference === "Service.ServiceID"],
-    ["ServicePriceHistory.ServiceID type=string", spServiceId?.type === "string"],
+    [`ServicePriceHistory.ServiceID type=${EXPECTED_JOIN_TYPE}`, spServiceId?.type === EXPECTED_JOIN_TYPE],
     ["DrugPriceHistory.DrugID is facet", dpDrugId?.facet === true],
     ["DrugPriceHistory.DrugID reference=Drug.DrugID", dpDrugId?.reference === "Drug.DrugID"],
-    ["Appointment.DoctorID reference=Doctor.DoctorID", apDoctorId?.reference === "Doctor.DoctorID"],
-    ["Appointment.PatientID reference=Patient.PatientID", apPatientId?.reference === "Patient.PatientID"],
-    ["Appointment.Status is facet", apStatus?.facet === true],
-    ["Appointment.MedicalServiceID is facet", apMedicalServiceId?.facet === true],
   ];
+
+  if (CHECK_APPOINTMENT_JOIN) {
+    checks.push(
+      ["Appointment.DoctorID reference=Doctor.DoctorID", apDoctorId?.reference === "Doctor.DoctorID"],
+      ["Appointment.PatientID reference=Patient.PatientID", apPatientId?.reference === "Patient.PatientID"],
+      ["Appointment.Status is facet", apStatus?.facet === true],
+      ["Appointment.MedicalServiceID is facet", apMedicalServiceId?.facet === true],
+    );
+  }
 
   for (const [name, pass] of checks) {
     console.log(`${pass ? "PASS" : "FAIL"} - ${name}`);

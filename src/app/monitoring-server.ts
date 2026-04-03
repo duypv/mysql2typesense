@@ -488,7 +488,7 @@ function dashboardHtml(): string {
         <div class="row">
           <div>
             <b>Reset Typesense</b>
-            <div class="muted-note">Xoa het du lieu Typesense, reset checkpoint binlog (Redis/file), dong bo lai tu dau.</div>
+            <div class="muted-note">Remove all Typesense data, reset checkpoint binlog (Redis/file), and resynchronize from the beginning.</div>
           </div>
           <button id="resetBtn" class="danger" style="border-color:#b42318;">Reset Typesense</button>
         </div>

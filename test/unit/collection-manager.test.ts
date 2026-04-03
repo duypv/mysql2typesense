@@ -178,6 +178,83 @@ describe("TypesenseCollectionManager.ensureCollection", () => {
       expect(fields).toContainEqual(expect.objectContaining({ name: "new_field", type: "string" }));
     });
 
+    it("recreates field when join reference is newly added on existing field", async () => {
+      const existing = [
+        { name: "id", type: "string" },
+        { name: "ServiceID", type: "int64", optional: true },
+      ];
+      const updateMock = vi.fn().mockResolvedValue({});
+      const client = {
+        collections: vi.fn((name?: string) => {
+          if (name) {
+            return {
+              retrieve: vi.fn().mockResolvedValue({ name, fields: existing }),
+              update: updateMock,
+            };
+          }
+          return { create: vi.fn() };
+        }),
+      };
+      const manager = new TypesenseCollectionManager(client as any);
+      const config = makeTableConfig([
+        { name: "id", type: "string" },
+        {
+          name: "ServiceID",
+          type: "int64",
+          optional: true,
+          reference: "Service.ServiceID",
+          async_reference: true,
+        },
+      ]);
+
+      await manager.ensureCollection(config);
+
+      expect(updateMock).toHaveBeenCalledOnce();
+      const { fields } = updateMock.mock.calls[0][0];
+      expect(fields).toContainEqual({ name: "ServiceID", drop: true });
+      expect(fields).toContainEqual(
+        expect.objectContaining({
+          name: "ServiceID",
+          type: "int64",
+          reference: "Service.ServiceID",
+          async_reference: true,
+        })
+      );
+    });
+
+    it("patches existing field when facet flag changes", async () => {
+      const existing = [
+        { name: "id", type: "string" },
+        { name: "Status", type: "string", optional: true, facet: false },
+      ];
+      const updateMock = vi.fn().mockResolvedValue({});
+      const client = {
+        collections: vi.fn((name?: string) => {
+          if (name) {
+            return {
+              retrieve: vi.fn().mockResolvedValue({ name, fields: existing }),
+              update: updateMock,
+            };
+          }
+          return { create: vi.fn() };
+        }),
+      };
+      const manager = new TypesenseCollectionManager(client as any);
+      const config = makeTableConfig([
+        { name: "id", type: "string" },
+        { name: "Status", type: "string", optional: true, facet: true },
+      ]);
+
+      await manager.ensureCollection(config);
+
+      expect(updateMock).toHaveBeenCalledOnce();
+      const { fields } = updateMock.mock.calls[0][0];
+      expect(fields).toContainEqual(
+        expect.objectContaining({ name: "Status", type: "string", optional: true, facet: true })
+      );
+      expect(fields).not.toContainEqual(expect.objectContaining({ name: "Status", drop: true }));
+    });
+
     it("continues silently when schema update throws", async () => {
       const existing = [{ name: "id", type: "string" }, { name: "score", type: "int64" }];
       const client = {

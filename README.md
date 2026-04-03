@@ -269,6 +269,82 @@ When `MONITORING_AUTH_TOKEN` is set, dashboard/admin endpoints require HTTP Basi
 - Username: any value
 - Password: value of `MONITORING_AUTH_TOKEN`
 
+## Post-Deploy Verification Checklist
+
+Use this checklist after every deploy (especially after changing `sync.config.json` or upgrading Typesense).
+
+1. Verify database mapping is consistent.
+
+- In container env: `DB_NAME` must match the actual MySQL schema.
+- In sync config: `database.name` should match the same schema.
+- If logs repeatedly show below warning, config is mismatched and auto-discovery is falling back:
+
+```text
+Configured database name found no tables, using MySQL connection database as fallback
+```
+
+2. Verify app health and discovered tables.
+
+```bash
+curl -s http://<host>:8080/health
+curl -s -u any:<MONITORING_AUTH_TOKEN> http://<host>:8080/api/discovered-tables
+```
+
+3. If schema config changed (facet/join/type), force schema refresh for affected collections.
+
+- For a few collections:
+
+```bash
+curl -X POST -u any:<MONITORING_AUTH_TOKEN> http://<host>:8080/api/reindex/ServicePriceHistory
+curl -X POST -u any:<MONITORING_AUTH_TOKEN> http://<host>:8080/api/reindex/DrugPriceHistory
+```
+
+- For full refresh (all collections), use reset from dashboard/admin endpoint, then let initial backfill complete.
+
+4. Verify Typesense schema for join + facet fields.
+
+```bash
+curl -s -H "X-TYPESENSE-API-KEY: <TS_API_KEY>" \
+  "http://<typesense-host>:8108/collections/ServicePriceHistory"
+```
+
+Confirm target fields contain expected properties:
+
+- `reference` (example: `Service.ServiceID`)
+- `async_reference` when needed
+- `facet: true` for configured facet fields
+- Correct `type` for reference fields
+
+For Typesense v30, reference field type should match referenced field type (for numeric IDs, use `int64`).
+
+5. Verify join query returns joined objects.
+
+```bash
+curl -s -H "X-TYPESENSE-API-KEY: <TS_API_KEY>" \
+  "http://<typesense-host>:8108/collections/ServicePriceHistory/documents/search?q=*&query_by=ServiceCode&include_fields=ServiceID,$Service(ServiceID,ServiceName)"
+```
+
+Expected result: hits contain embedded `$Service` object(s), not just `ServiceID`.
+
+6. Verify facet query returns facet counts.
+
+```bash
+curl -s -H "X-TYPESENSE-API-KEY: <TS_API_KEY>" \
+  "http://<typesense-host>:8108/collections/Service/documents/search?q=*&query_by=ServiceName&facet_by=Status,Type"
+```
+
+Expected result: non-empty `facet_counts` for configured fields.
+
+7. Verify realtime sync is active after initial backfill.
+
+- Check `/api/status` shows service healthy and table sync progressing.
+- Insert/update/delete a small test row in MySQL and confirm document change appears in Typesense.
+
+8. Keep one rollback option ready.
+
+- Save previous image tag and previous `sync.config.json`.
+- If data quality is wrong after deploy, rollback image + config, then reindex affected collections.
+
 ## Docker
 
 Build locally:

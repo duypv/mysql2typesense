@@ -59,7 +59,17 @@ export class TypesenseCollectionManager {
    *    operations in a single PATCH via `{ name, drop: true }` + the new field object.
    */
   private diffSchemaChanges(
-    existing: Array<{ name?: string; type?: string; optional?: boolean; reference?: string }>,
+    existing: Array<{
+      name?: string;
+      type?: string;
+      optional?: boolean;
+      reference?: string;
+      async_reference?: boolean;
+      facet?: boolean;
+      index?: boolean;
+      sort?: boolean;
+      infix?: boolean;
+    }>,
     desired: TypesenseFieldConfig[]
   ): Array<Record<string, unknown>> {
     const desiredByName = new Map(desired.map((f) => [f.name, f]));
@@ -72,8 +82,18 @@ export class TypesenseCollectionManager {
 
       const typeMismatch = want.type !== field.type;
       const optionalMismatch = want.optional === true && !field.optional;
+      const referenceMismatch = want.reference !== undefined && want.reference !== field.reference;
+      const asyncReferenceMismatch =
+        want.async_reference !== undefined && want.async_reference !== field.async_reference;
+      const facetMismatch = want.facet !== undefined && want.facet !== field.facet;
+      const indexMismatch = want.index !== undefined && want.index !== field.index;
+      const sortMismatch = want.sort !== undefined && want.sort !== field.sort;
+      const infixMismatch = want.infix !== undefined && want.infix !== field.infix;
 
-      if (typeMismatch) {
+      const requiresDropRecreate = typeMismatch || referenceMismatch || asyncReferenceMismatch;
+      const requiresPatchUpdate = optionalMismatch || facetMismatch || indexMismatch || sortMismatch || infixMismatch;
+
+      if (requiresDropRecreate) {
         // Drop the old field and re-add with the correct type.
         patches.push({ name: field.name, drop: true });
         patches.push({
@@ -87,8 +107,16 @@ export class TypesenseCollectionManager {
           ...(want.sort !== undefined && { sort: want.sort }),
           ...(want.infix !== undefined && { infix: want.infix })
         });
-      } else if (optionalMismatch) {
-        patches.push({ name: field.name, type: field.type, optional: true });
+      } else if (requiresPatchUpdate) {
+        patches.push({
+          name: field.name,
+          type: field.type,
+          optional: want.optional ?? field.optional,
+          ...(want.facet !== undefined && { facet: want.facet }),
+          ...(want.index !== undefined && { index: want.index }),
+          ...(want.sort !== undefined && { sort: want.sort }),
+          ...(want.infix !== undefined && { infix: want.infix })
+        });
       }
     }
 
