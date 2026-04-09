@@ -216,6 +216,46 @@ describe("TypesenseCollectionManager.ensureCollection", () => {
       expect(updateMock).not.toHaveBeenCalled();
     });
 
+    it("drops and recreates collection when a required field exists but was previously patched as optional", async () => {
+      // Simulates the exact production bug: StockID was patched into the Stock collection
+      // in a previous run, but Typesense forced optional=true on it. Now DrugBatchOutMaster
+      // tries to join via StockID but Typesense v30 rejects optional join-target fields.
+      // Fix: detect required-field-is-currently-optional and trigger drop+recreate.
+      const existing = [
+        { name: "id", type: "string" },
+        { name: "StockID", type: "int64", optional: true }, // ← was force-patched as optional
+        { name: "StockCode", type: "string", optional: true },
+      ];
+      const deleteMock = vi.fn().mockResolvedValue({});
+      const createMock = vi.fn().mockResolvedValue({});
+      const updateMock = vi.fn().mockResolvedValue({});
+      const client = {
+        collections: vi.fn((name?: string) => {
+          if (name) {
+            return {
+              retrieve: vi.fn().mockResolvedValue({ name, fields: existing }),
+              update: updateMock,
+              delete: deleteMock,
+            };
+          }
+          return { create: createMock };
+        }),
+      };
+      const manager = new TypesenseCollectionManager(client as any);
+      const config = makeTableConfig([
+        { name: "id", type: "string" },
+        { name: "StockID", type: "int64" }, // required in desired schema
+        { name: "StockCode", type: "string", optional: true },
+      ]);
+
+      await manager.ensureCollection(config);
+
+      // Must drop — cannot make a field required via PATCH
+      expect(deleteMock).toHaveBeenCalledOnce();
+      expect(createMock).toHaveBeenCalledOnce();
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
     it("recreates field when join reference is newly added on existing field", async () => {
       const existing = [
         { name: "id", type: "string" },

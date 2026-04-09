@@ -46,14 +46,28 @@ export class TypesenseCollectionManager {
     // would leave them as optional, causing Typesense v30 join validation to reject them
     // with "Referenced field X not found in collection Y". In that case, drop and recreate
     // so the field is defined correctly from the start.
-    const existingFieldNames = new Set(
-      (existing.fields ?? []).map((f) => f.name).filter(Boolean)
+    //
+    // We also drop+recreate when a required field already EXISTS in the collection but
+    // was previously patched in as optional=true (Typesense forces optional on all
+    // patch-added fields). Typesense does not support changing optional→required via
+    // PATCH, so a full drop+recreate is the only fix.
+    const existingByName = new Map(
+      (existing.fields ?? [])
+        .filter((f) => !!f.name)
+        .map((f) => [f.name!, f])
     );
+    const existingFieldNames = new Set(existingByName.keys());
+
     const hasMissingRequiredField = fields.some(
       (want) => !want.optional && !existingFieldNames.has(want.name)
     );
+    const hasRequiredButOptionalField = fields.some((want) => {
+      if (want.optional) return false;
+      const ex = existingByName.get(want.name);
+      return ex !== undefined && ex.optional === true;
+    });
 
-    if (hasMissingRequiredField) {
+    if (hasMissingRequiredField || hasRequiredButOptionalField) {
       await this.client.collections(table.collection).delete();
       await createCollection();
       return;
@@ -113,6 +127,10 @@ export class TypesenseCollectionManager {
 
       const typeMismatch = want.type !== field.type;
       const optionalMismatch = want.optional === true && !field.optional;
+      // Becoming required when currently optional cannot be fixed by PATCH — needs drop+recreate.
+      // The collection-level check in ensureCollection triggers the recreate; this flag is here
+      // for completeness so the diff result is consistent if diffSchemaChanges is called directly.
+      const requiredOptionalMismatch = !want.optional && field.optional === true;
       const referenceMismatch = want.reference !== undefined && want.reference !== field.reference;
       const asyncReferenceMismatch =
         want.async_reference !== undefined && want.async_reference !== field.async_reference;
@@ -121,7 +139,7 @@ export class TypesenseCollectionManager {
       const sortMismatch = want.sort !== undefined && want.sort !== field.sort;
       const infixMismatch = want.infix !== undefined && want.infix !== field.infix;
 
-      const requiresDropRecreate = typeMismatch || referenceMismatch || asyncReferenceMismatch;
+      const requiresDropRecreate = typeMismatch || referenceMismatch || asyncReferenceMismatch || requiredOptionalMismatch;
       const requiresPatchUpdate = optionalMismatch || facetMismatch || indexMismatch || sortMismatch || infixMismatch;
 
       if (requiresDropRecreate) {
