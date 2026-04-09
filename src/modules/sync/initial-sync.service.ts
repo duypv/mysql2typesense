@@ -21,34 +21,16 @@ export class InitialSyncService {
   async run(tables: TableSyncConfig[]): Promise<void> {
     this.monitor.markMode("initial");
 
-    // Identify which collections are referenced as join targets by any other table.
-    // Typesense v30 strictly validates that join target fields are non-optional. A
-    // collection that was created in a previous run may have the target field in its
-    // schema yet still fail join validation for subtle reasons (e.g. the field type
-    // or optional flag was corrupted by an old patch). Forcing a fresh drop+recreate
-    // for every join target collection guarantees a canonical, known-good schema on
-    // every initial sync — safe because Phase 2 re-imports all data anyway.
-    const joinTargetCollections = new Set<string>();
+    // Phase 1: drop+recreate ALL collection schemas before importing any data.
+    // Every collection is force-recreated to:
+    //   a) Remove stale documents deleted from MySQL since the last sync.
+    //   b) Guarantee canonical schema (fixes corrupted optional flags, type mismatches
+    //      from prior patch-in operations that Typesense v30 join validation rejects).
+    //   c) Ensure referenced/parent collections exist before child collections import
+    //      their documents (avoids "Referenced field X not found in collection Y").
+    // This is safe because Phase 2 re-imports all data from MySQL.
     for (const table of tables) {
-      for (const field of table.typesense.fields) {
-        if (field.reference) {
-          const dotIdx = field.reference.indexOf(".");
-          if (dotIdx !== -1) {
-            joinTargetCollections.add(field.reference.slice(0, dotIdx));
-          }
-        }
-      }
-    }
-
-    // Phase 1: ensure ALL collection schemas exist before importing any data.
-    // This is required for join references to resolve correctly: if table A references
-    // collection B via a join field, Typesense validates the B schema at import time —
-    // even when async_reference is true. Without this pre-creation pass, tables that
-    // are indexed before their referenced tables (due to alphabetical discovery order)
-    // will fail with "Referenced field X not found in collection Y".
-    for (const table of tables) {
-      const forceRecreate = joinTargetCollections.has(table.collection);
-      await withRetry(() => this.collectionManager.ensureCollection(table, forceRecreate), this.retryConfig);
+      await withRetry(() => this.collectionManager.ensureCollection(table, /* forceRecreate */ true), this.retryConfig);
     }
 
     // Phase 2: import data for all tables now that all schemas are in place.
