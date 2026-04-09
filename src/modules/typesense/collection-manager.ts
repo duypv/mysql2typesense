@@ -50,15 +50,20 @@ export class TypesenseCollectionManager {
       return;
     }
 
-    if (this.synced.has(table.collection)) {
+    // Forced recreation must be checked BEFORE the synced cache. Otherwise a prior
+    // ensureCollection call (without forceRecreate) marks the collection as synced,
+    // and subsequent calls with forceRecreate=true are silently skipped.
+    if (forceRecreate) {
+      this.logger?.info(
+        { collection: table.collection, numDocs: (existing as any).num_documents ?? "?" },
+        "ensureCollection: drop+recreate (forced — clean slate for initial sync)"
+      );
+      await this.client.collections(table.collection).delete();
+      await createCollection();
       return;
     }
 
-    // Forced recreation requested (e.g. join target during initial sync).
-    if (forceRecreate) {
-      this.logger?.info({ collection: table.collection }, "ensureCollection: drop+recreate (forced — join target schema refresh)");
-      await this.client.collections(table.collection).delete();
-      await createCollection();
+    if (this.synced.has(table.collection)) {
       return;
     }
 

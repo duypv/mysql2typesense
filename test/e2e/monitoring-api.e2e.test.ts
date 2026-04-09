@@ -137,6 +137,26 @@ describe.skipIf(SKIP)("monitoring API — admin endpoints (with auth)", () => {
     expect(names).toContain("ChildJoin");
   });
 
+  it("GET /api/collections/users/documents returns paginated documents", async () => {
+    const res = await monGet("/api/collections/users/documents?page=1&perPage=50", true);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      collection: string;
+      page: number;
+      perPage: number;
+      totalDocuments: number;
+      totalPages: number;
+      items: unknown[];
+    };
+    expect(body.collection).toBe("users");
+    expect(body.page).toBe(1);
+    expect(body.perPage).toBe(50);
+    expect(body.totalDocuments).toBeGreaterThanOrEqual(0);
+    expect(body.totalPages).toBeGreaterThanOrEqual(1);
+    expect(Array.isArray(body.items)).toBe(true);
+    expect(body.items.length).toBeLessThanOrEqual(50);
+  });
+
   it("GET /api/discovered-tables returns discovery info", async () => {
     const res = await monGet("/api/discovered-tables", true);
     expect(res.status).toBe(200);

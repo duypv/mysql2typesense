@@ -156,6 +156,67 @@
       margin-right: 6px; margin-bottom: 6px; background: #fff;
     }
     .pill.runtime { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+    .collection-link {
+      border: none;
+      background: transparent;
+      color: var(--accent);
+      text-decoration: underline;
+      padding: 0;
+      font: inherit;
+      cursor: pointer;
+    }
+    .collection-link.active { font-weight: 700; }
+    .collection-docs-panel {
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px;
+      background: #fbfcfd;
+    }
+    .collection-docs-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .doc-json {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12px;
+      font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
+      color: #0f1722;
+    }
+    .field-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+    .field-pill {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid #c7d4df;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+      background: #f4f8fb;
+      color: #334155;
+    }
+    .rep-text {
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #1f2937;
+      font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
+      font-size: 12px;
+    }
+    .detail-row td {
+      background: #f8fafc;
+      border-bottom: 1px solid var(--line);
+      padding: 10px;
+    }
+    .detail-row pre {
+      margin: 0;
+      max-height: 260px;
+      overflow: auto;
+    }
     /* Error detail modal */
     .modal-backdrop {
       display: none; position: fixed; inset: 0; z-index: 100;
@@ -243,6 +304,38 @@
     </div>
   </div>
 
+  <!-- Collection documents modal -->
+  <div class="modal-backdrop" id="collectionModal" role="dialog" aria-modal="true" aria-label="Collection Data">
+    <div class="modal" style="max-width:1100px;">
+      <div class="modal-header">
+        <h2 id="collectionModalTitle">Collection Data</h2>
+        <button class="modal-close" id="collectionModalCloseBtn" aria-label="Close">&times;</button>
+      </div>
+      <div class="row" style="margin-bottom:10px;align-items:flex-end;">
+        <div class="muted-note" id="collectionModalMeta"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button id="collectionModalCopyPageBtn">Copy Page JSON</button>
+          <button id="collectionModalPrevBtn">Prev</button>
+          <button id="collectionModalNextBtn">Next</button>
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:70px;">#</th>
+            <th style="width:220px;">Representative</th>
+            <th>Fields</th>
+            <th style="width:130px;">Action</th>
+          </tr>
+        </thead>
+        <tbody id="collectionModalRows"></tbody>
+      </table>
+      <div class="modal-actions">
+        <button id="collectionModalCloseBtnBottom">Close</button>
+      </div>
+    </div>
+  </div>
+
   <div class="layout">
     <aside class="sidebar">
       <div class="brand">Sync Dashboard</div>
@@ -318,6 +411,7 @@
 
       <section class="card section-panel" id="section-collections">
         <h2>Typesense Collections</h2>
+        <div class="muted-note" style="margin-bottom:8px;">Click collection name to open popup data view.</div>
         <table>
           <thead><tr><th>Name</th><th>Documents</th><th>Action</th></tr></thead>
           <tbody id="collections"></tbody>
@@ -458,12 +552,178 @@
       if (norm.length > 0) { drawLine('#1f7a5a', 'upserts'); drawLine('#b42318', 'deletes'); }
     }
 
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    const COLLECTION_PAGE_SIZE = 10;
+    const collectionDocsState = {
+      collection: null,
+      page: 1,
+      totalPages: 1,
+      totalDocuments: 0,
+      items: []
+    };
+
+    function openCollectionModal() {
+      document.getElementById('collectionModal').classList.add('open');
+    }
+
+    function closeCollectionModal() {
+      document.getElementById('collectionModal').classList.remove('open');
+    }
+
+    function buildRepresentative(doc) {
+      const keys = Object.keys(doc || {});
+      if (keys.length === 0) return 'empty document';
+      const preferred = ['id', 'uuid', 'name', 'title', 'email'];
+      for (const key of preferred) {
+        if (Object.prototype.hasOwnProperty.call(doc, key)) {
+          const value = doc[key];
+          if (typeof value !== 'object') return key + '=' + String(value);
+        }
+      }
+      const snippets = [];
+      for (const key of keys) {
+        const value = doc[key];
+        if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) {
+          snippets.push(key + '=' + String(value));
+        }
+        if (snippets.length === 3) break;
+      }
+      return snippets.length > 0 ? snippets.join(' | ') : keys[0] + '=complex';
+    }
+
+    function renderCollectionDocumentsModal() {
+      const title = document.getElementById('collectionModalTitle');
+      const meta = document.getElementById('collectionModalMeta');
+      const rows = document.getElementById('collectionModalRows');
+      const prevBtn = document.getElementById('collectionModalPrevBtn');
+      const nextBtn = document.getElementById('collectionModalNextBtn');
+
+      title.textContent = 'Collection: ' + collectionDocsState.collection;
+      meta.textContent =
+        'Page ' + collectionDocsState.page + '/' + collectionDocsState.totalPages +
+        ' | ' + collectionDocsState.totalDocuments + ' documents | 10 items/page';
+
+      prevBtn.disabled = collectionDocsState.page <= 1;
+      nextBtn.disabled = collectionDocsState.page >= collectionDocsState.totalPages;
+
+      rows.innerHTML = '';
+      if (collectionDocsState.items.length === 0) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td colspan="4" class="muted" style="text-align:center;padding:12px;">No documents in this page.</td>';
+        rows.appendChild(tr);
+        return;
+      }
+
+      const startIndex = (collectionDocsState.page - 1) * COLLECTION_PAGE_SIZE;
+      collectionDocsState.items.forEach((doc, idx) => {
+        const tr = document.createElement('tr');
+
+        const indexTd = document.createElement('td');
+        indexTd.textContent = String(startIndex + idx + 1);
+
+        const repTd = document.createElement('td');
+        repTd.innerHTML = '<div class="rep-text" title="' + escapeHtml(buildRepresentative(doc)) + '">' + escapeHtml(buildRepresentative(doc)) + '</div>';
+
+        const fieldsTd = document.createElement('td');
+        const keys = Object.keys(doc || {});
+        if (keys.length === 0) {
+          fieldsTd.innerHTML = '<span class="muted">No fields</span>';
+        } else {
+          fieldsTd.innerHTML = '<div class="field-pills">' + keys.map(key => '<span class="field-pill">' + escapeHtml(key) + '</span>').join('') + '</div>';
+        }
+
+        const actionTd = document.createElement('td');
+        actionTd.style.whiteSpace = 'nowrap';
+        const copyBtn = document.createElement('button');
+        copyBtn.textContent = 'Copy JSON';
+        copyBtn.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(JSON.stringify(doc, null, 2));
+            copyBtn.textContent = 'Copied!';
+            setTimeout(() => { copyBtn.textContent = 'Copy JSON'; }, 1500);
+          } catch {}
+        });
+        const expandBtn = document.createElement('button');
+        expandBtn.textContent = 'Expand';
+        expandBtn.style.marginLeft = '6px';
+
+        actionTd.appendChild(copyBtn);
+        actionTd.appendChild(expandBtn);
+
+        tr.appendChild(indexTd);
+        tr.appendChild(repTd);
+        tr.appendChild(fieldsTd);
+        tr.appendChild(actionTd);
+        rows.appendChild(tr);
+
+        const detailTr = document.createElement('tr');
+        detailTr.className = 'detail-row';
+        detailTr.style.display = 'none';
+        const detailTd = document.createElement('td');
+        detailTd.colSpan = 4;
+        detailTd.innerHTML = '<pre class="doc-json">' + escapeHtml(JSON.stringify(doc, null, 2)) + '</pre>';
+        detailTr.appendChild(detailTd);
+        rows.appendChild(detailTr);
+
+        expandBtn.addEventListener('click', () => {
+          const isOpen = detailTr.style.display !== 'none';
+          detailTr.style.display = isOpen ? 'none' : '';
+          expandBtn.textContent = isOpen ? 'Expand' : 'Collapse';
+        });
+      });
+    }
+
+    async function loadCollectionDocuments(collectionName, page, quiet, openModalOnSuccess) {
+      const meta = document.getElementById('collectionModalMeta');
+      collectionDocsState.collection = collectionName;
+      meta.textContent = 'Loading data for ' + collectionName + '...';
+
+      try {
+        const payload = await fetchJson(
+          '/api/collections/' + encodeURIComponent(collectionName) + '/documents?page=' + page + '&perPage=' + COLLECTION_PAGE_SIZE
+        );
+        collectionDocsState.collection = payload.collection;
+        collectionDocsState.page = payload.page;
+        collectionDocsState.totalPages = payload.totalPages;
+        collectionDocsState.totalDocuments = payload.totalDocuments;
+        collectionDocsState.items = payload.items || [];
+        renderCollectionDocumentsModal();
+        await renderCollections();
+        if (openModalOnSuccess) openCollectionModal();
+      } catch (e) {
+        meta.textContent = 'Failed to load collection data: ' + e.message;
+        if (!quiet) alert('Failed to load collection data: ' + e.message);
+      }
+    }
+
     async function renderCollections() {
       const body = document.getElementById('collections');
       body.innerHTML = '';
       const payload = await fetchJson('/api/collections');
       payload.collections.forEach(col => {
         const tr = document.createElement('tr');
+        const nameTd = document.createElement('td');
+        const nameBtn = document.createElement('button');
+        nameBtn.className = 'collection-link' + (collectionDocsState.collection === col.name ? ' active' : '');
+        nameBtn.textContent = col.name;
+        nameBtn.title = 'View collection data';
+        nameBtn.onclick = async () => {
+          showSection('section-collections');
+          await loadCollectionDocuments(col.name, 1, false, true);
+        };
+        nameTd.appendChild(nameBtn);
+
+        const docsTd = document.createElement('td');
+        docsTd.textContent = String(col.num_documents);
+
         const wrapper = document.createElement('div');
         wrapper.style.cssText = 'display:flex;gap:8px;';
 
@@ -506,11 +766,46 @@
         wrapper.appendChild(delBtn);
         const actionTd = document.createElement('td');
         actionTd.appendChild(wrapper);
-        tr.innerHTML = '<td>' + col.name + '</td><td>' + col.num_documents + '</td>';
+        tr.appendChild(nameTd);
+        tr.appendChild(docsTd);
         tr.appendChild(actionTd);
         body.appendChild(tr);
       });
     }
+
+    document.getElementById('collectionModalPrevBtn').addEventListener('click', async () => {
+      if (!collectionDocsState.collection || collectionDocsState.page <= 1) return;
+      await loadCollectionDocuments(collectionDocsState.collection, collectionDocsState.page - 1, false, true);
+    });
+
+    document.getElementById('collectionModalNextBtn').addEventListener('click', async () => {
+      if (!collectionDocsState.collection || collectionDocsState.page >= collectionDocsState.totalPages) return;
+      await loadCollectionDocuments(collectionDocsState.collection, collectionDocsState.page + 1, false, true);
+    });
+
+    document.getElementById('collectionModalCopyPageBtn').addEventListener('click', async () => {
+      if (!collectionDocsState.collection) return;
+      const payload = {
+        collection: collectionDocsState.collection,
+        page: collectionDocsState.page,
+        perPage: COLLECTION_PAGE_SIZE,
+        totalDocuments: collectionDocsState.totalDocuments,
+        totalPages: collectionDocsState.totalPages,
+        items: collectionDocsState.items
+      };
+      const btn = document.getElementById('collectionModalCopyPageBtn');
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy Page JSON'; }, 1800);
+      } catch {}
+    });
+
+    document.getElementById('collectionModalCloseBtn').addEventListener('click', closeCollectionModal);
+    document.getElementById('collectionModalCloseBtnBottom').addEventListener('click', closeCollectionModal);
+    document.getElementById('collectionModal').addEventListener('click', e => {
+      if (e.target === document.getElementById('collectionModal')) closeCollectionModal();
+    });
 
     async function renderDiscoveredTables() {
       const payload = await fetchJson('/api/discovered-tables');
@@ -669,7 +964,12 @@
     document.getElementById('errorModal').addEventListener('click', e => {
       if (e.target === document.getElementById('errorModal')) closeErrorModal();
     });
-    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeErrorModal(); });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') {
+        closeErrorModal();
+        closeCollectionModal();
+      }
+    });
 
     document.getElementById('modalCopyReportBtn').addEventListener('click', async () => {
       if (!currentError) return;
@@ -766,6 +1066,9 @@
           'Current: ' + latest.upserts + ' upserts/s, ' + latest.deletes + ' deletes/s';
         await renderDiscoveredTables();
         await renderCollections();
+        if (collectionDocsState.collection && document.getElementById('collectionModal').classList.contains('open')) {
+          await loadCollectionDocuments(collectionDocsState.collection, collectionDocsState.page, true, false);
+        }
       } finally {
         refreshAll.running = false;
       }

@@ -96,6 +96,39 @@ async function handleApiCollections(
     return true;
   }
 
+  if (request.method === "GET") {
+    const segments = url.pathname.split("/").filter(Boolean);
+    if (segments.length === 4 && segments[0] === "api" && segments[1] === "collections" && segments[3] === "documents") {
+      const collectionName = decodeURIComponent(segments[2]);
+      const pageParam = Number.parseInt(url.searchParams.get("page") ?? "1", 10);
+      const perPageParam = Number.parseInt(url.searchParams.get("perPage") ?? "50", 10);
+      const page = Number.isNaN(pageParam) || pageParam < 1 ? 1 : pageParam;
+      const perPage = Number.isNaN(perPageParam) || perPageParam < 1 ? 50 : Math.min(perPageParam, 200);
+
+      const exportedDocuments = await typesenseClient.collections(collectionName).documents().export();
+      const lines = exportedDocuments
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      const totalDocuments = lines.length;
+      const totalPages = totalDocuments === 0 ? 1 : Math.ceil(totalDocuments / perPage);
+      const safePage = Math.min(page, totalPages);
+      const start = (safePage - 1) * perPage;
+      const pageItems = lines.slice(start, start + perPage).map((line) => JSON.parse(line) as Record<string, unknown>);
+
+      sendJson(response, 200, {
+        collection: collectionName,
+        page: safePage,
+        perPage,
+        totalDocuments,
+        totalPages,
+        items: pageItems
+      });
+      return true;
+    }
+  }
+
   if (request.method === "DELETE" && url.pathname.startsWith("/api/collections/")) {
     const name = decodeURIComponent(url.pathname.replace("/api/collections/", ""));
     await typesenseClient.collections(name).delete();

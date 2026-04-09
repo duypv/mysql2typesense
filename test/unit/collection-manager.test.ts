@@ -295,6 +295,43 @@ describe("TypesenseCollectionManager.ensureCollection", () => {
       expect(updateMock).not.toHaveBeenCalled();
     });
 
+    it("forceRecreate works even when collection was previously marked as synced", async () => {
+      // BUG regression test: the `synced` cache used to short-circuit before checking
+      // forceRecreate, so a second call with forceRecreate=true was silently ignored.
+      const existing = [
+        { name: "id", type: "string" },
+        { name: "Status", type: "string", optional: true },
+      ];
+      const deleteMock = vi.fn().mockResolvedValue({});
+      const createMock = vi.fn().mockResolvedValue({});
+      const client = {
+        collections: vi.fn((name?: string) => {
+          if (name) {
+            return {
+              retrieve: vi.fn().mockResolvedValue({ name, fields: existing }),
+              update: vi.fn().mockResolvedValue({}),
+              delete: deleteMock,
+            };
+          }
+          return { create: createMock };
+        }),
+      };
+      const manager = new TypesenseCollectionManager(client as any);
+      const config = makeTableConfig([
+        { name: "id", type: "string" },
+        { name: "Status", type: "string", optional: true },
+      ]);
+
+      // First call: normal ensureCollection → marks collection as synced
+      await manager.ensureCollection(config);
+      expect(deleteMock).not.toHaveBeenCalled();
+
+      // Second call: forceRecreate=true → must STILL drop+recreate despite synced cache
+      await manager.ensureCollection(config, /* forceRecreate */ true);
+      expect(deleteMock).toHaveBeenCalledOnce();
+      expect(createMock).toHaveBeenCalledOnce();
+    });
+
     it("recreates field when join reference is newly added on existing field", async () => {
       const existing = [
         { name: "id", type: "string" },

@@ -289,30 +289,15 @@ export async function bootstrap(): Promise<AppContext> {
             logger.info({ tableCount: resolvedTables.length }, "Reset: discovered tables for initial sync");
           }
 
-          // Phase 1: pre-create all collection schemas so that referenced/parent collections
-          // exist before child collections import their documents (avoids join reference errors).
-          for (const table of resolvedTables) {
-            try {
-              await collectionManager.ensureCollection(table);
-            } catch (error) {
-              logger.warn(
-                { error, table: `${table.database}.${table.table}` },
-                "Reset phase-1: schema pre-creation failed, will retry during data import"
-              );
-            }
-          }
-
-          // Phase 2: import data table-by-table; individual failures are isolated.
-          for (const table of resolvedTables) {
-            try {
-              await initialSyncService.run([table]);
-            } catch (error) {
-              monitor.recordError(error, `reset:${table.database}.${table.table}`);
-              logger.error(
-                { error, table: `${table.database}.${table.table}` },
-                "Reset sync failed for table, continuing with remaining tables"
-              );
-            }
+          // Run a full initial sync for all tables at once. run() handles:
+          //   1. Force-recreating all collections (removes stale data, ensures clean schema)
+          //   2. Creating all schemas before any data import (avoids join reference errors)
+          //   3. Importing all data from MySQL
+          try {
+            await initialSyncService.run(resolvedTables);
+          } catch (error) {
+            monitor.recordError(error, "reset");
+            logger.error({ error }, "Reset initial sync failed");
           }
 
           // Restore realtime mode after reset completes
