@@ -484,18 +484,23 @@ function dashboardHtml(): string {
       <div class="modal-field">
         <div class="modal-label">Context</div>
         <div class="modal-value" id="modalContext"></div>
+        <div id="modalContextDetail" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;"></div>
+      </div>
+      <div class="modal-field" id="modalAnalysisField">
+        <div class="modal-label">Error Analysis &amp; Fix Suggestion</div>
+        <div id="modalAnalysis" style="font-size:13px;line-height:1.75;border:1px solid #fde8e8;border-radius:8px;padding:12px 14px;background:#fff8f8;"></div>
       </div>
       <div class="modal-field">
         <div class="modal-label">Error Message</div>
         <pre class="modal-pre" id="modalMessage" style="color:var(--danger);"></pre>
       </div>
       <div class="modal-field" id="modalDataField">
-        <div class="modal-label">Document Data (caused the error)</div>
+        <div class="modal-label">Document Data <span style="font-weight:400;color:var(--muted);">(highlighted field = likely cause)</span></div>
         <pre class="modal-pre" id="modalData"></pre>
       </div>
       <div class="modal-actions">
+        <button id="modalCopyReportBtn" style="background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600;">Copy Full Report</button>
         <button id="modalCopyBtn">Copy JSON</button>
-        <button id="modalCopyErrBtn">Copy Error</button>
         <button id="modalCloseBtnBottom">Close</button>
       </div>
     </div>
@@ -772,24 +777,121 @@ function dashboardHtml(): string {
         });
     }
 
-    let currentErrorData = null;
-    let currentErrorMessage = '';
+    function parseContext(ctx) {
+      if (!ctx) return {};
+      // Formats: "initial:db.Table:document:id", "realtime:db.Table", "reindex:Collection", "reset", "auto-discovery:key"
+      const parts = ctx.split(':');
+      const op = parts[0];
+      const result = { op };
+      if (op === 'initial' || op === 'realtime') {
+        const tableKey = parts[1] || '';
+        const dotIdx = tableKey.indexOf('.');
+        result.database = dotIdx !== -1 ? tableKey.slice(0, dotIdx) : tableKey;
+        result.table = dotIdx !== -1 ? tableKey.slice(dotIdx + 1) : '';
+        if (parts[2] === 'document') result.documentId = parts[3];
+      } else if (op === 'reindex' || op === 'update-schema') {
+        result.collection = parts.slice(1).join(':');
+      } else if (op === 'auto-discovery') {
+        result.key = parts.slice(1).join(':');
+      }
+      return result;
+    }
+
+    let currentError = null;
 
     function openErrorModal(error) {
-      currentErrorData = error.data ?? null;
-      currentErrorMessage = error.message;
+      currentError = error;
+      const ctx = parseContext(error.context);
+
       document.getElementById('modalAt').textContent = error.at;
       document.getElementById('modalContext').textContent = error.context || '—';
       document.getElementById('modalMessage').textContent = error.message;
+
+      // Context breakdown chips
+      const detail = document.getElementById('modalContextDetail');
+      detail.innerHTML = '';
+      const chipBase = 'display:inline-flex;align-items:center;border-radius:6px;padding:3px 9px;font-size:12px;font-weight:600;border:1px solid;';
+      function addChip(label, value, bg, color) {
+        const chip = document.createElement('span');
+        chip.style.cssText = chipBase + 'background:' + bg + ';color:' + color + ';border-color:' + color + '44;';
+        chip.innerHTML = (label ? '<span style="opacity:0.6;font-weight:400;margin-right:3px;">' + label + '</span>' : '') + value;
+        detail.appendChild(chip);
+      }
+      const opMap = {
+        initial: ['Initial Sync', '#e6f4f7', '#0b6b7a'],
+        realtime: ['Realtime', '#e7f5ef', '#1f7a5a'],
+        reindex: ['Reindex', '#fef9ec', '#9f7a1f'],
+        'update-schema': ['Update Schema', '#f4ecfe', '#7a3f9f'],
+        reset: ['Reset', '#fde8e8', '#b42318'],
+        'auto-discovery': ['Auto-Discovery', '#f2f5f7', '#5d6773']
+      };
+      const opInfo = opMap[ctx.op] || [ctx.op, '#f2f5f7', '#5d6773'];
+      if (ctx.op) addChip('', opInfo[0], opInfo[1], opInfo[2]);
+      if (ctx.database) addChip('DB:', ctx.database, '#e8f0fe', '#0550ae');
+      if (ctx.table) addChip('Table:', ctx.table, '#e8f5ec', '#116329');
+      if (ctx.documentId) addChip('Doc ID:', ctx.documentId, '#fff3e8', '#953800');
+      if (ctx.collection) addChip('Collection:', ctx.collection, '#e6f4f7', '#0b6b7a');
+
+      // Error analysis with fix suggestions
+      const analysisField = document.getElementById('modalAnalysisField');
+      const analysis = document.getElementById('modalAnalysis');
+      const msg = error.message;
+      const rows = [];
+      let highlightField = null;
+
+      const refMatch = msg.match(new RegExp('Referenced field [\\x60\'?]?(\\w+)[\\x60\'?]? not found in the collection [\\x60\'?]?(\\w+)[\\x60\'?]?', 'i'));
+      if (refMatch) {
+        highlightField = refMatch[1];
+        rows.push('&#10060; Field <strong>' + refMatch[1] + '</strong> được dùng làm join reference target trong collection <strong>' + refMatch[2] + '</strong>, nhưng field này không tồn tại hoặc là optional trong collection đó.');
+        rows.push('&#128161; Fix: Reindex collection <strong>' + refMatch[2] + '</strong> trước, rồi mới reindex <strong>' + (ctx.table || 'table này') + '</strong>. Nếu vẫn lỗi, kiểm tra <code>join_configs</code> đúng field name và type chưa.');
+      }
+
+      const typeMatch = msg.match(new RegExp('Field [\\x60\'?]?(\\w+)[\\x60\'?]? must have ([\\w]+) value', 'i'));
+      if (typeMatch) {
+        highlightField = highlightField || typeMatch[1];
+        rows.push('&#10060; Field <strong>' + typeMatch[1] + '</strong> gửi sai kiểu dữ liệu — Typesense yêu cầu <strong>' + typeMatch[2] + '</strong>.');
+        rows.push('&#128161; Fix: Trong <code>join_configs</code> của table này, thêm <code>&quot;type&quot;: &quot;' + typeMatch[2] + '&quot;</code> cho field <strong>' + typeMatch[1] + '</strong>.');
+      }
+
+      const notFoundDoc = msg.match(new RegExp('Field [\\x60\'?]?(\\w+)[\\x60\'?]? not found in the document', 'i'));
+      if (notFoundDoc) {
+        highlightField = highlightField || notFoundDoc[1];
+        rows.push('&#9888; Field <strong>' + notFoundDoc[1] + '</strong> bắt buộc nhưng không có trong document (thường do binlog partial event khi MySQL binlog-row-image != FULL).');
+        rows.push('&#128161; Fix: Đánh dấu field <strong>' + notFoundDoc[1] + '</strong> là <code>&quot;optional&quot;: true</code> trong config.');
+      }
+
+      const importFailed = msg.match(/Typesense import failed for document (\S+): (.+)/i);
+      if (!refMatch && !typeMatch && !notFoundDoc && importFailed) {
+        rows.push('&#10060; Import thất bại cho document <strong>' + importFailed[1] + '</strong>.');
+        rows.push('&#128161; Kiểm tra Typesense schema của collection <strong>' + (ctx.table || '?') + '</strong> và đối chiếu với document data bên dưới.');
+      }
+
+      if (rows.length > 0) {
+        analysis.innerHTML = rows.map(r => '<div style="padding:2px 0;">' + r + '</div>').join('');
+        analysisField.style.display = '';
+      } else {
+        analysisField.style.display = 'none';
+      }
+
+      // Document data with syntax highlight + highlight the problematic field
       const dataField = document.getElementById('modalDataField');
       const dataEl = document.getElementById('modalData');
-      if (currentErrorData) {
-        const formatted = JSON.stringify(currentErrorData, null, 2);
-        dataEl.innerHTML = syntaxHighlightJson(formatted);
+      if (error.data) {
+        const formatted = JSON.stringify(error.data, null, 2);
+        let html = syntaxHighlightJson(formatted);
+        if (highlightField) {
+          // Wrap the key span of the problematic field in a highlight mark
+          html = html.replace(
+            new RegExp('(<span class="json-key">"' + highlightField + '"<\/span>)(: )(<span[^>]*>[^<]*<\/span>)', 'g'),
+            '<mark style="background:#fff3cd;border-radius:3px;outline:2px solid #e6a817;outline-offset:1px;">$1$2$3</mark>'
+          );
+        }
+        dataEl.innerHTML = html;
         dataField.style.display = '';
       } else {
         dataField.style.display = 'none';
       }
+
       document.getElementById('errorModal').classList.add('open');
     }
 
@@ -805,21 +907,42 @@ function dashboardHtml(): string {
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') closeErrorModal();
     });
-    document.getElementById('modalCopyBtn').addEventListener('click', async () => {
-      if (!currentErrorData) return;
+    document.getElementById('modalCopyReportBtn').addEventListener('click', async () => {
+      if (!currentError) return;
+      const ctx = parseContext(currentError.context);
+      const lines = ['## Bug Report — mysql2typesense', ''];
+      lines.push('**Time:** ' + currentError.at);
+      lines.push('**Context:** ' + (currentError.context || '—'));
+      if (ctx.op) lines.push('**Operation:** ' + ctx.op);
+      if (ctx.database && ctx.table) lines.push('**Table:** ' + ctx.database + '.' + ctx.table);
+      if (ctx.documentId) lines.push('**Document ID:** ' + ctx.documentId);
+      if (ctx.collection) lines.push('**Collection:** ' + ctx.collection);
+      lines.push('');
+      lines.push('**Error:**');
+      lines.push('\`\`\`');
+      lines.push(currentError.message);
+      lines.push('\`\`\`');
+      if (currentError.data) {
+        lines.push('');
+        lines.push('**Document Data:**');
+        lines.push('\`\`\`json');
+        lines.push(JSON.stringify(currentError.data, null, 2));
+        lines.push('\`\`\`');
+      }
       try {
-        await navigator.clipboard.writeText(JSON.stringify(currentErrorData, null, 2));
+        await navigator.clipboard.writeText(lines.join('\n'));
+        const btn = document.getElementById('modalCopyReportBtn');
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy Full Report'; }, 2500);
+      } catch {}
+    });
+    document.getElementById('modalCopyBtn').addEventListener('click', async () => {
+      if (!currentError?.data) return;
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(currentError.data, null, 2));
         const btn = document.getElementById('modalCopyBtn');
         btn.textContent = 'Copied!';
         setTimeout(() => { btn.textContent = 'Copy JSON'; }, 2000);
-      } catch {}
-    });
-    document.getElementById('modalCopyErrBtn').addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(currentErrorMessage);
-        const btn = document.getElementById('modalCopyErrBtn');
-        btn.textContent = 'Copied!';
-        setTimeout(() => { btn.textContent = 'Copy Error'; }, 2000);
       } catch {}
     });
 
