@@ -33,6 +33,8 @@ export class InitialSyncService {
       await withRetry(() => this.collectionManager.ensureCollection(table, /* forceRecreate */ true), this.retryConfig);
     }
 
+    await withRetry(() => this.collectionManager.validateJoinReferenceIntegrity(tables), this.retryConfig);
+
     // Phase 2: import data for all tables now that all schemas are in place.
     for (const table of tables) {
       const tableKey = `${table.database}.${table.table}`;

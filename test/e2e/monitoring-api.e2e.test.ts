@@ -168,6 +168,23 @@ describe.skipIf(SKIP)("monitoring API — admin endpoints (with auth)", () => {
     expect(Array.isArray(body.currentTables)).toBe(true);
   });
 
+  it("GET /api/join-integrity returns diagnostics rows", async () => {
+    const res = await monGet("/api/join-integrity", true);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      generatedAt: string;
+      totalReferences: number;
+      passed: number;
+      failed: number;
+      rows: unknown[];
+    };
+    expect(typeof body.generatedAt).toBe("string");
+    expect(typeof body.totalReferences).toBe("number");
+    expect(typeof body.passed).toBe("number");
+    expect(typeof body.failed).toBe("number");
+    expect(Array.isArray(body.rows)).toBe(true);
+  });
+
   it("GET /dashboard with auth returns 200 HTML", async () => {
     const res = await monGet("/dashboard", true);
     expect(res.status).toBe(200);

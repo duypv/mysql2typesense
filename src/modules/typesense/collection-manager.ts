@@ -1,7 +1,7 @@
 import type { Logger } from "pino";
 import type { Client } from "typesense";
 
-import type { TableSyncConfig, TypesenseFieldConfig } from "../../core/types.js";
+import type { JoinReferenceDiagnosticsReport, JoinReferenceDiagnosticRow, TableSyncConfig, TypesenseFieldConfig } from "../../core/types.js";
 
 export class TypesenseCollectionManager {
   private readonly synced = new Set<string>();
@@ -117,6 +117,137 @@ export class TypesenseCollectionManager {
       this.logger?.info({ collection: table.collection }, "ensureCollection: schema up-to-date, kept as-is");
     }
     this.synced.add(table.collection);
+  }
+
+  async validateJoinReferenceIntegrity(tables: TableSyncConfig[]): Promise<void> {
+    const report = await this.getJoinReferenceIntegrityReport(tables);
+    if (report.failed > 0) {
+      const issues = report.rows.filter((row) => row.status === "fail").map((row) => `${row.sourceCollection}.${row.sourceField} -> ${row.reference}: ${row.reason}`);
+      this.logger?.error(
+        { issues, issueCount: issues.length },
+        "join-reference validation failed after schema ensure"
+      );
+      throw new Error(`Join-reference schema validation failed: ${issues.join("; ")}`);
+    }
+
+    this.logger?.info(
+      { referenceCount: report.totalReferences, targetCollectionCount: new Set(report.rows.map((row) => row.targetCollection)).size },
+      "join-reference validation passed"
+    );
+  }
+
+  async getJoinReferenceIntegrityReport(tables: TableSyncConfig[]): Promise<JoinReferenceDiagnosticsReport> {
+    const joinRefs = tables.flatMap((table) =>
+      table.typesense.fields
+        .filter((field) => typeof field.reference === "string" && field.reference.length > 0)
+        .map((field) => ({
+          sourceCollection: table.collection,
+          sourceField: field.name,
+          sourceFieldType: field.type,
+          reference: field.reference as string
+        }))
+    );
+
+    if (joinRefs.length === 0) {
+      return {
+        generatedAt: new Date().toISOString(),
+        totalReferences: 0,
+        passed: 0,
+        failed: 0,
+        rows: []
+      };
+    }
+
+    const targetCollections = Array.from(new Set(joinRefs.map((ref) => ref.reference.split(".", 2)[0])));
+    const targetSchemas = new Map<
+      string,
+      Array<{ name?: string; type?: string; optional?: boolean; reference?: string; async_reference?: boolean }>
+    >();
+
+    for (const collection of targetCollections) {
+      try {
+        const schema = await this.client.collections(collection).retrieve();
+        targetSchemas.set(collection, schema.fields ?? []);
+      } catch (error) {
+        this.logger?.error(
+          { collection, error },
+          "join-reference validation: failed to load target collection schema"
+        );
+        targetSchemas.set(collection, []);
+      }
+    }
+
+    const rows: JoinReferenceDiagnosticRow[] = [];
+    for (const ref of joinRefs) {
+      const [targetCollection, targetField] = ref.reference.split(".", 2);
+      const fields = targetSchemas.get(targetCollection) ?? [];
+      const target = fields.find((field) => field.name === targetField);
+
+      if (!target) {
+        rows.push({
+          sourceCollection: ref.sourceCollection,
+          sourceField: ref.sourceField,
+          sourceFieldType: ref.sourceFieldType,
+          reference: ref.reference,
+          targetCollection,
+          targetField,
+          targetFieldExists: false,
+          status: "fail",
+          reason: "target field missing"
+        });
+        continue;
+      }
+
+      let reason: string | undefined;
+      let status: "pass" | "fail" = "pass";
+      const sourceTargetTypeMatch = target.type ? target.type === ref.sourceFieldType : undefined;
+
+      if (target.optional === true) {
+        reason = "target field is optional=true (must be required)";
+        status = "fail";
+      }
+
+      if (target.type && target.type !== ref.sourceFieldType) {
+        this.logger?.warn(
+          {
+            sourceCollection: ref.sourceCollection,
+            sourceField: ref.sourceField,
+            sourceType: ref.sourceFieldType,
+            targetCollection,
+            targetField,
+            targetType: target.type
+          },
+          "join-reference validation: source/target field type mismatch"
+        );
+        if (status === "pass") {
+          reason = "source/target field type mismatch";
+        }
+      }
+
+      rows.push({
+        sourceCollection: ref.sourceCollection,
+        sourceField: ref.sourceField,
+        sourceFieldType: ref.sourceFieldType,
+        reference: ref.reference,
+        targetCollection,
+        targetField,
+        targetFieldExists: true,
+        targetFieldType: target.type,
+        targetFieldOptional: target.optional,
+        sourceTargetTypeMatch,
+        status,
+        reason
+      });
+    }
+
+    const failed = rows.filter((row) => row.status === "fail").length;
+    return {
+      generatedAt: new Date().toISOString(),
+      totalReferences: rows.length,
+      passed: rows.length - failed,
+      failed,
+      rows
+    };
   }
 
   /**

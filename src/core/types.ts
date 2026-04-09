@@ -109,6 +109,29 @@ export interface TableJoinConfig {
   fields: JoinFieldConfig[];
 }
 
+export interface JoinReferenceDiagnosticRow {
+  sourceCollection: string;
+  sourceField: string;
+  sourceFieldType: TypesenseFieldType;
+  reference: string;
+  targetCollection: string;
+  targetField: string;
+  targetFieldExists: boolean;
+  targetFieldType?: string;
+  targetFieldOptional?: boolean;
+  sourceTargetTypeMatch?: boolean;
+  status: "pass" | "fail";
+  reason?: string;
+}
+
+export interface JoinReferenceDiagnosticsReport {
+  generatedAt: string;
+  totalReferences: number;
+  passed: number;
+  failed: number;
+  rows: JoinReferenceDiagnosticRow[];
+}
+
 export interface SyncConfigFile {
   database?: DatabaseSyncConfig;
   tables?: TableSyncConfigSeed[];

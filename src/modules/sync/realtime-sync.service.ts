@@ -6,6 +6,8 @@ import type { TypesenseCollectionManager } from "../typesense/collection-manager
 import type { TypesenseDocumentIndexer } from "../typesense/document-indexer.js";
 
 export class RealtimeSyncService {
+  private readonly joinSchemaValidatedTables = new Set<string>();
+
   constructor(
     private readonly listener: BinlogListener,
     private readonly collectionManager: TypesenseCollectionManager,
@@ -26,6 +28,11 @@ export class RealtimeSyncService {
 
       try {
         await withRetry(() => this.collectionManager.ensureCollection(event.table), this.retryConfig);
+
+        if (!this.joinSchemaValidatedTables.has(tableKey)) {
+          await withRetry(() => this.collectionManager.validateJoinReferenceIntegrity([event.table]), this.retryConfig);
+          this.joinSchemaValidatedTables.add(tableKey);
+        }
 
         if (event.operation === "delete") {
           const primaryValue = event.before?.[event.table.primaryKey];

@@ -489,4 +489,66 @@ describe("resolveTableConfigs — cross-table join reference target enforcement"
     const codeField = stockCfg.typesense.fields.find((f) => f.name === "StockCode");
     expect(codeField?.optional).toBe(true); // not a join target → stays optional
   });
+
+  it("adds missing join target field and mapping when target table uses strict custom fields", async () => {
+    const stockCols: ColumnSpec[] = [
+      { name: "id", mysqlType: "int(11)", primary: true },
+      { name: "StockID", mysqlType: "int(11)" },
+      { name: "StockCode", mysqlType: "varchar(100)" }
+    ];
+    const drugCols: ColumnSpec[] = [
+      { name: "id", mysqlType: "int(11)", primary: true },
+      { name: "StockOutID", mysqlType: "int(11)" }
+    ];
+
+    const introspector = makeIntrospector(stockCols);
+    vi.spyOn(introspector, "getColumns")
+      .mockResolvedValueOnce(
+        stockCols.map((c) => ({ name: c.name, mysqlType: c.mysqlType, nullable: false, primary: c.primary ?? false }))
+      )
+      .mockResolvedValueOnce(
+        drugCols.map((c) => ({ name: c.name, mysqlType: c.mysqlType, nullable: false, primary: c.primary ?? false }))
+      );
+
+    const joinConfigs: TableJoinConfig[] = [
+      {
+        table: "DrugBatchOutMaster",
+        fields: [{ name: "StockOutID", reference: "Stock.StockID", type: "int64" }]
+      }
+    ];
+
+    const [stockCfg] = await resolveTableConfigs(
+      introspector,
+      "app",
+      [
+        {
+          table: "Stock",
+          database: "app",
+          typesense: {
+            fields: [
+              { name: "id", type: "string" },
+              { name: "StockCode", type: "string", optional: true }
+            ]
+          },
+          transform: {
+            fieldMappings: [
+              { source: "id", target: "id", type: "int64" },
+              { source: "StockCode", target: "StockCode", type: "string", optional: true }
+            ]
+          }
+        },
+        { table: "DrugBatchOutMaster", database: "app" }
+      ],
+      undefined,
+      joinConfigs
+    );
+
+    const stockIdField = stockCfg.typesense.fields.find((f) => f.name === "StockID");
+    expect(stockIdField).toBeDefined();
+    expect(stockIdField?.optional).toBeUndefined();
+
+    const stockIdMapping = stockCfg.transform.fieldMappings.find((m) => m.target === "StockID");
+    expect(stockIdMapping).toBeDefined();
+    expect(stockIdMapping?.source).toBe("StockID");
+  });
 });

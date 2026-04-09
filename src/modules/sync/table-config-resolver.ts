@@ -8,6 +8,7 @@ import type {
   TypesenseFieldConfig
 } from "../../core/types.js";
 import { MysqlSchemaIntrospector } from "../mysql/schema-introspector.js";
+import type { MysqlColumnMeta } from "../mysql/schema-introspector.js";
 
 function matchesPattern(input: string, pattern: string): boolean {
   const value = input.toLowerCase();
@@ -269,6 +270,7 @@ export async function resolveTableConfigs(
         }));
 
   const resolved: TableSyncConfig[] = [];
+  const tableColumnsByKey = new Map<string, MysqlColumnMeta[]>();
 
   for (const seed of effectiveSeeds) {
     const database = seed.database ?? resolvedDefaultDatabase;
@@ -277,6 +279,7 @@ export async function resolveTableConfigs(
     const columns = (await introspector.getColumns(database, table)).filter(
       (column) => !excludedFieldNames.has(column.name.toLowerCase())
     );
+    tableColumnsByKey.set(`${database}.${table}`.toLowerCase(), columns);
 
     if (columns.length === 0) {
       continue;
@@ -396,10 +399,38 @@ export async function resolveTableConfigs(
       );
       if (!targetTable) continue;
       const fieldIdx = targetTable.typesense.fields.findIndex((f) => f.name === targetFieldName);
-      if (fieldIdx !== -1 && targetTable.typesense.fields[fieldIdx].optional) {
+
+      const targetColumns = tableColumnsByKey.get(`${targetTable.database}.${targetTable.table}`.toLowerCase()) ?? [];
+      const targetColumn = targetColumns.find((c) => c.name.toLowerCase() === targetFieldName.toLowerCase());
+
+      if (fieldIdx === -1) {
+        // If a join target field is missing from schema (often due to strict custom field mappings),
+        // add it explicitly so reference validation does not fail during import.
+        const inferredType = targetColumn
+          ? introspector.inferTypesenseType(targetColumn.mysqlType).type
+          : srcField.type;
+        targetTable.typesense.fields.push({
+          name: targetFieldName,
+          type: inferredType
+        });
+      } else if (targetTable.typesense.fields[fieldIdx].optional) {
         // Remove optional flag so the field is required — join targets must be non-optional.
         const { optional: _remove, ...rest } = targetTable.typesense.fields[fieldIdx];
         targetTable.typesense.fields[fieldIdx] = rest as TypesenseFieldConfig;
+      }
+
+      const hasMapping = targetTable.transform.fieldMappings.some(
+        (mapping) => mapping.target.toLowerCase() === targetFieldName.toLowerCase()
+      );
+      if (!hasMapping && targetColumn) {
+        const inferred = introspector.inferTypesenseType(targetColumn.mysqlType);
+        targetTable.transform.fieldMappings.push({
+          source: targetColumn.name,
+          target: targetFieldName,
+          type: inferred.type,
+          sourceFormat: inferred.sourceFormat,
+          timestampResolution: inferred.sourceFormat === "datetime" ? ("seconds" as const) : undefined
+        });
       }
     }
   }

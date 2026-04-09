@@ -149,6 +149,33 @@
     .legend .upserts::before { background: #1f7a5a; }
     .legend .deletes::before { background: #b42318; }
     .muted-note { margin-top: 6px; color: var(--muted); font-size: 13px; }
+    .join-status {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      border: 1px solid;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+    .join-status.pass {
+      color: #0f766e;
+      background: #ecfdf5;
+      border-color: #10b981;
+    }
+    .join-status.fail {
+      color: #b42318;
+      background: #fff1f1;
+      border-color: #f04438;
+    }
+    .join-integrity-summary {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 8px 0 12px;
+    }
     .pill {
       display: inline-flex; align-items: center;
       border: 1px solid var(--line); border-radius: 999px;
@@ -356,6 +383,7 @@
         <button class="menu-item" data-target="section-throughput">Realtime Throughput</button>
         <button class="menu-item" data-target="section-per-table">Per Table</button>
         <button class="menu-item" data-target="section-discovered">Discovered Tables</button>
+        <button class="menu-item" data-target="section-join-integrity">Join Integrity</button>
         <button class="menu-item" data-target="section-collections">Collections</button>
         <button class="menu-item" data-target="section-errors">
           <span>Recent Errors</span>
@@ -407,6 +435,24 @@
         <h2>Auto-Discovered Tables</h2>
         <div class="muted-note" id="discoveryMode">Loading...</div>
         <div id="discoveredTables"></div>
+      </section>
+
+      <section class="card section-panel" id="section-join-integrity">
+        <h2>Join Reference Integrity</h2>
+        <div class="muted-note" id="joinIntegrityInfo">Loading diagnostics...</div>
+        <div class="join-integrity-summary" id="joinIntegritySummary"></div>
+        <table>
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Source</th>
+              <th>Reference</th>
+              <th>Target State</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody id="joinIntegrityRows"></tbody>
+        </table>
       </section>
 
       <section class="card section-panel" id="section-collections">
@@ -827,6 +873,74 @@
       });
     }
 
+    async function renderJoinIntegrity() {
+      const info = document.getElementById('joinIntegrityInfo');
+      const summary = document.getElementById('joinIntegritySummary');
+      const rowsRoot = document.getElementById('joinIntegrityRows');
+
+      const payload = await fetchJson('/api/join-integrity');
+      info.textContent =
+        'Generated at ' + payload.generatedAt +
+        ' | total refs: ' + payload.totalReferences +
+        ' | pass: ' + payload.passed +
+        ' | fail: ' + payload.failed;
+
+      summary.innerHTML = '';
+      const badges = [
+        { label: 'Total', value: payload.totalReferences, cls: 'pass' },
+        { label: 'Pass', value: payload.passed, cls: 'pass' },
+        { label: 'Fail', value: payload.failed, cls: payload.failed > 0 ? 'fail' : 'pass' }
+      ];
+      badges.forEach(item => {
+        const el = document.createElement('span');
+        el.className = 'join-status ' + item.cls;
+        el.textContent = item.label + ': ' + item.value;
+        summary.appendChild(el);
+      });
+
+      rowsRoot.innerHTML = '';
+      const rows = payload.rows || [];
+      if (rows.length === 0) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td colspan="5" class="muted" style="text-align:center;padding:16px;">No join references configured.</td>';
+        rowsRoot.appendChild(tr);
+        return;
+      }
+
+      rows.forEach(row => {
+        const tr = document.createElement('tr');
+
+        const statusTd = document.createElement('td');
+        statusTd.innerHTML = '<span class="join-status ' + row.status + '">' + row.status + '</span>';
+
+        const sourceTd = document.createElement('td');
+        sourceTd.textContent = row.sourceCollection + '.' + row.sourceField + ' (' + row.sourceFieldType + ')';
+
+        const refTd = document.createElement('td');
+        refTd.textContent = row.reference;
+
+        const targetTd = document.createElement('td');
+        if (!row.targetFieldExists) {
+          targetTd.textContent = 'missing';
+        } else {
+          const optionalTxt = row.targetFieldOptional === true ? 'optional' : 'required';
+          const typeTxt = row.targetFieldType || 'unknown';
+          const matchTxt = row.sourceTargetTypeMatch === false ? ' | type mismatch' : '';
+          targetTd.textContent = typeTxt + ' | ' + optionalTxt + matchTxt;
+        }
+
+        const reasonTd = document.createElement('td');
+        reasonTd.textContent = row.reason || 'OK';
+
+        tr.appendChild(statusTd);
+        tr.appendChild(sourceTd);
+        tr.appendChild(refTd);
+        tr.appendChild(targetTd);
+        tr.appendChild(reasonTd);
+        rowsRoot.appendChild(tr);
+      });
+    }
+
     // ---------- error modal ----------
     function syntaxHighlightJson(json) {
       return json
@@ -1065,6 +1179,7 @@
         document.getElementById('rateSummary').textContent =
           'Current: ' + latest.upserts + ' upserts/s, ' + latest.deletes + ' deletes/s';
         await renderDiscoveredTables();
+        await renderJoinIntegrity();
         await renderCollections();
         if (collectionDocsState.collection && document.getElementById('collectionModal').classList.contains('open')) {
           await loadCollectionDocuments(collectionDocsState.collection, collectionDocsState.page, true, false);

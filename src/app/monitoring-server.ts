@@ -6,7 +6,7 @@ import { URL } from "node:url";
 import type { Logger } from "pino";
 import type { Client } from "typesense";
 
-import type { SyncMonitor } from "../core/types.js";
+import type { JoinReferenceDiagnosticsReport, SyncMonitor } from "../core/types.js";
 
 export interface MonitoringServerOptions {
   host: string;
@@ -18,6 +18,7 @@ export interface MonitoringServerOptions {
   reindexCollection: (collectionName: string) => Promise<{ ok: boolean; reason?: string }>;
   updateCollectionSchema: (collectionName: string) => Promise<{ ok: boolean; reason?: string }>;
   resetTypesense: () => Promise<{ ok: boolean; reason?: string }>;
+  getJoinReferenceDiagnostics: () => Promise<JoinReferenceDiagnosticsReport>;
   getDiscoveredTables: () => {
     autoDiscoveryEnabled: boolean;
     startupDiscovered: string[];
@@ -80,6 +81,7 @@ function isAdminRoute(pathname: string): boolean {
     pathname.startsWith("/api/reindex") ||
     pathname.startsWith("/api/update-schema") ||
     pathname === "/api/reset" ||
+    pathname === "/api/join-integrity" ||
     pathname === "/api/discovered-tables"
   );
 }
@@ -214,7 +216,19 @@ function dashboardHtml(): string {
 }
 
 export function startMonitoringServer(options: MonitoringServerOptions): Server {
-  const { host, port, logger, monitor, typesenseClient, authToken, reindexCollection, updateCollectionSchema, resetTypesense, getDiscoveredTables } = options;
+  const {
+    host,
+    port,
+    logger,
+    monitor,
+    typesenseClient,
+    authToken,
+    reindexCollection,
+    updateCollectionSchema,
+    resetTypesense,
+    getJoinReferenceDiagnostics,
+    getDiscoveredTables
+  } = options;
 
   const server = createServer(async (request, response) => {
     try {
@@ -247,6 +261,12 @@ export function startMonitoringServer(options: MonitoringServerOptions): Server 
 
       if (request.method === "GET" && url.pathname === "/api/discovered-tables") {
         sendJson(response, 200, getDiscoveredTables());
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/join-integrity") {
+        const diagnostics = await getJoinReferenceDiagnostics();
+        sendJson(response, 200, diagnostics);
         return;
       }
 

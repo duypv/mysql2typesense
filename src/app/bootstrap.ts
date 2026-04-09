@@ -90,7 +90,7 @@ export async function bootstrap(): Promise<AppContext> {
   );
 
   if (autoDatabaseMode) {
-    tableRefreshTimer = setInterval(async () => {
+    const runDiscoveryWave = async (trigger: "startup" | "interval") => {
       if (refreshInProgress) {
         return;
       }
@@ -114,6 +114,7 @@ export async function bootstrap(): Promise<AppContext> {
         }
 
         const knownTables = new Set(resolvedTables.map((table) => `${table.database}.${table.table}`));
+        const newlyDiscovered: string[] = [];
 
         for (const tableName of discoveredTables) {
           const key = `${database}.${tableName}`;
@@ -121,38 +122,89 @@ export async function bootstrap(): Promise<AppContext> {
             continue;
           }
 
-          const [resolved] = await resolveTableConfigs(
+          const allSeeds = [
+            ...resolvedTables.map((table) => ({
+              database: table.database,
+              table: table.table,
+              collection: table.collection,
+              primaryKey: table.primaryKey
+            })),
+            { database, table: tableName }
+          ];
+
+          const refreshedConfigs = await resolveTableConfigs(
             introspector,
             config.mysql.database,
-            [{ database, table: tableName }],
+            allSeeds,
             config.sync.database,
             config.sync.joinConfigs
           );
+
+          const refreshedByKey = new Map(
+            refreshedConfigs.map((table) => [`${table.database}.${table.table}`, table])
+          );
+
+          for (let i = 0; i < resolvedTables.length; i += 1) {
+            const existingKey = `${resolvedTables[i].database}.${resolvedTables[i].table}`;
+            const refreshed = refreshedByKey.get(existingKey);
+            if (refreshed) {
+              resolvedTables[i] = refreshed;
+            }
+          }
+
+          const resolved = refreshedByKey.get(key);
 
           if (!resolved) {
             continue;
           }
 
           resolvedTables.push(resolved);
+          knownTables.add(key);
           monitor.setTables(resolvedTables);
           binlogListener.registerTable?.(resolved);
           runtimeDiscoveredTables.add(key);
+          newlyDiscovered.push(key);
           logger.info({ table: key }, "Discovered new table in database mode");
+        }
 
+        if (newlyDiscovered.length > 0) {
           try {
-            await initialSyncService.run([resolved]);
+            // Backfill all currently known tables together so join dependencies are
+            // always created/imported in one coherent run, regardless of discovery order.
+            await initialSyncService.run(resolvedTables);
             monitor.markMode("realtime");
-            logger.info({ table: key }, "Initial backfill completed for newly discovered table");
+            logger.info(
+              {
+                trigger,
+                discoveredTables: newlyDiscovered,
+                totalKnownTables: resolvedTables.length
+              },
+              "Initial backfill completed for newly discovered tables"
+            );
           } catch (error) {
-            monitor.recordError(error, `auto-discovery:${key}`);
-            logger.error({ error, table: key }, "Initial backfill failed for newly discovered table");
+            monitor.recordError(error, "auto-discovery");
+            logger.error(
+              { error, trigger, discoveredTables: newlyDiscovered, totalKnownTables: resolvedTables.length },
+              "Initial backfill failed after discovery wave"
+            );
           }
+        } else if (trigger === "startup") {
+          logger.info({ trigger, totalKnownTables: resolvedTables.length }, "Startup discovery wave completed with no new tables");
         }
       } catch (error) {
-        logger.error({ error }, "Periodic table discovery failed");
+        logger.error({ error, trigger }, "Periodic table discovery failed");
       } finally {
         refreshInProgress = false;
       }
+    };
+
+    // Startup guard: run one discovery wave immediately to avoid the initial 15s blind window.
+    await runDiscoveryWave("startup");
+
+    tableRefreshTimer = setInterval(() => {
+      runDiscoveryWave("interval").catch((error) => {
+        logger.error({ error }, "Periodic table discovery runner failed unexpectedly");
+      });
     }, 15000);
   }
 
@@ -197,37 +249,61 @@ export async function bootstrap(): Promise<AppContext> {
         }
 
         const existingTable = resolvedTables[tableIndex];
-        const [freshConfig] = await resolveTableConfigs(
+        const refreshedConfigs = await resolveTableConfigs(
           introspector,
           config.mysql.database,
-          [{ database: existingTable.database, table: existingTable.table, collection: existingTable.collection }],
+          resolvedTables.map((table) => ({
+            database: table.database,
+            table: table.table,
+            collection: table.collection,
+            primaryKey: table.primaryKey
+          })),
           config.sync.database,
           config.sync.joinConfigs
         );
+
+        const refreshedByKey = new Map(
+          refreshedConfigs.map((table) => [`${table.database}.${table.table}`, table])
+        );
+
+        for (let i = 0; i < resolvedTables.length; i += 1) {
+          const key = `${resolvedTables[i].database}.${resolvedTables[i].table}`;
+          const refreshed = refreshedByKey.get(key);
+          if (refreshed) {
+            resolvedTables[i] = refreshed;
+          }
+        }
+
+        const freshConfig = resolvedTables.find((item) => item.collection === collectionName);
 
         if (!freshConfig) {
           return { ok: false, reason: "Failed to resolve fresh table config from database" };
         }
 
-        const fields = freshConfig.typesense.fields.some((f) => f.name === "id")
-          ? freshConfig.typesense.fields
-          : [{ name: "id", type: "string" as const }, ...freshConfig.typesense.fields];
+        const dependencyCollections = new Set<string>();
+        for (const field of freshConfig.typesense.fields) {
+          if (!field.reference) continue;
+          const targetCollection = field.reference.split(".", 2)[0];
+          if (targetCollection) {
+            dependencyCollections.add(targetCollection);
+          }
+        }
+
+        const dependencyTables = resolvedTables.filter(
+          (table) => dependencyCollections.has(table.collection) && table.collection !== freshConfig.collection
+        );
+        const backfillTables = [...dependencyTables, freshConfig];
 
         reindexInFlight.add(collectionName);
         try {
-          try {
-            await typesenseClient.collections(collectionName).update({ fields });
-          } catch {
-            // Schema update failed (e.g. incompatible type change) — delete and re-sync
-            logger.warn({ collection: collectionName }, "Schema update failed, deleting collection and re-syncing");
-            try {
-              await typesenseClient.collections(collectionName).delete();
-            } catch { /* ignore if already gone */ }
-            resolvedTables[tableIndex] = freshConfig;
-            await initialSyncService.run([freshConfig]);
-            return { ok: true };
-          }
-          resolvedTables[tableIndex] = freshConfig;
+          await initialSyncService.run(backfillTables);
+          logger.info(
+            {
+              collection: collectionName,
+              dependencyTables: dependencyTables.map((table) => `${table.database}.${table.table}`)
+            },
+            "Force update schema completed with join-aware backfill"
+          );
           return { ok: true };
         } catch (error) {
           monitor.recordError(error, `update-schema:${collectionName}`);
@@ -241,6 +317,8 @@ export async function bootstrap(): Promise<AppContext> {
       },
       resetTypesense: async () => {
         try {
+          logger.info("Reset: started");
+
           // Delete all Typesense collections
           const collections = await typesenseClient.collections().retrieve();
           for (const col of collections) {
@@ -256,12 +334,12 @@ export async function bootstrap(): Promise<AppContext> {
           const emptyCheckpoint: BinlogCheckpoint = { updatedAt: new Date().toISOString() };
           await checkpointStore.save(emptyCheckpoint);
 
-          // If no tables are known yet (e.g. startup discovery hasn't run, or DB name mismatch),
-          // do a fresh discovery before re-syncing so reset actually imports data.
-          if (resolvedTables.length === 0 && autoDatabaseMode) {
+          // Always refresh table configs before reset sync so we never rely on stale in-memory schemas.
+          let freshTables: TableSyncConfig[] = [];
+          if (autoDatabaseMode) {
             const configuredDatabase = config.sync.database?.name ?? config.mysql.database;
             let discoveryDatabase = configuredDatabase;
-            let freshTables = await resolveTableConfigs(introspector, config.mysql.database, [], config.sync.database, config.sync.joinConfigs);
+            freshTables = await resolveTableConfigs(introspector, config.mysql.database, [], config.sync.database, config.sync.joinConfigs);
 
             // If configured database.name found nothing, retry with MySQL connection DB
             if (freshTables.length === 0 && configuredDatabase !== config.mysql.database) {
@@ -275,33 +353,78 @@ export async function bootstrap(): Promise<AppContext> {
                 );
               }
             }
-
-            for (const table of freshTables) {
-              const key = `${table.database}.${table.table}`;
-              const alreadyKnown = new Set(resolvedTables.map((t) => `${t.database}.${t.table}`));
-              if (!alreadyKnown.has(key)) {
-                resolvedTables.push(table);
-                binlogListener.registerTable?.(table);
-                runtimeDiscoveredTables.add(key);
-              }
-            }
-            monitor.setTables(resolvedTables);
-            logger.info({ tableCount: resolvedTables.length }, "Reset: discovered tables for initial sync");
+          } else {
+            const seedTables = config.sync.tables.length > 0
+              ? config.sync.tables
+              : resolvedTables.map((table) => ({
+                  database: table.database,
+                  table: table.table,
+                  collection: table.collection,
+                  primaryKey: table.primaryKey
+                }));
+            freshTables = await resolveTableConfigs(
+              introspector,
+              config.mysql.database,
+              seedTables,
+              config.sync.database,
+              config.sync.joinConfigs
+            );
           }
+
+          if (freshTables.length === 0) {
+            const reason = "Reset aborted: no tables resolved from current database/config";
+            logger.error({ autoDatabaseMode }, reason);
+            return { ok: false, reason };
+          }
+
+          const knownKeysBefore = new Set(resolvedTables.map((t) => `${t.database}.${t.table}`));
+          resolvedTables.splice(0, resolvedTables.length, ...freshTables);
+
+          for (const table of freshTables) {
+            const key = `${table.database}.${table.table}`;
+            binlogListener.registerTable?.(table);
+            if (!knownKeysBefore.has(key)) {
+              runtimeDiscoveredTables.add(key);
+            }
+          }
+          monitor.setTables(resolvedTables);
+          logger.info({ tableCount: resolvedTables.length }, "Reset: refreshed table configs for initial sync");
 
           // Run a full initial sync for all tables at once. run() handles:
           //   1. Force-recreating all collections (removes stale data, ensures clean schema)
           //   2. Creating all schemas before any data import (avoids join reference errors)
           //   3. Importing all data from MySQL
           try {
+            logger.info({ tableCount: resolvedTables.length }, "Reset: running full initial sync");
             await initialSyncService.run(resolvedTables);
+            logger.info({ tableCount: resolvedTables.length }, "Reset: full initial sync completed");
           } catch (error) {
             monitor.recordError(error, "reset");
             logger.error({ error }, "Reset initial sync failed");
+            return {
+              ok: false,
+              reason: error instanceof Error ? error.message : String(error)
+            };
+          }
+
+          // Extra safety pass requested: force update schema for all collections after reset completes.
+          // This runs one more global initial sync to ensure all schemas are reconciled in a single pass.
+          try {
+            logger.info({ tableCount: resolvedTables.length }, "Reset: force update schema for all collections (post-reset pass)");
+            await initialSyncService.run(resolvedTables);
+            logger.info({ tableCount: resolvedTables.length }, "Reset: post-reset force schema update completed");
+          } catch (error) {
+            monitor.recordError(error, "reset:force-update-all");
+            logger.error({ error }, "Reset post-pass force schema update failed");
+            return {
+              ok: false,
+              reason: error instanceof Error ? error.message : String(error)
+            };
           }
 
           // Restore realtime mode after reset completes
           monitor.markMode("realtime");
+          logger.info({ tableCount: resolvedTables.length }, "Reset: completed and switched back to realtime mode");
           return { ok: true };
         } catch (error) {
           monitor.recordError(error, "reset");
@@ -310,6 +433,9 @@ export async function bootstrap(): Promise<AppContext> {
             reason: error instanceof Error ? error.message : String(error)
           };
         }
+      },
+      getJoinReferenceDiagnostics: async () => {
+        return collectionManager.getJoinReferenceIntegrityReport(resolvedTables);
       },
       getDiscoveredTables: () => ({
         autoDiscoveryEnabled: autoDatabaseMode,
