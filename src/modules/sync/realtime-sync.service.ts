@@ -47,7 +47,7 @@ export class RealtimeSyncService {
         this.monitor.recordRealtimeEvent(tableKey, event.operation);
         this.logger.info({ table: event.table.table, operation: event.operation }, "Realtime change processed");
       } catch (error) {
-        this.monitor.recordError(error, `realtime:${tableKey}`);
+        this.monitor.recordError(error, `realtime:${tableKey}`, (event.after ?? event.before) as Record<string, unknown> | undefined);
         this.logger.error({ error, table: event.table.table, operation: event.operation }, "Realtime change failed, skipping event");
       }
     });

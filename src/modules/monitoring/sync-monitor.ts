@@ -13,7 +13,7 @@ export class InMemorySyncMonitor implements SyncMonitor {
     errors: 0
   };
   private readonly perTable: Record<string, { initialDocuments: number; upserts: number; deletes: number }> = {};
-  private readonly recentErrors: Array<{ at: string; message: string; context?: string }> = [];
+  private readonly recentErrors: Array<{ at: string; message: string; context?: string; data?: Record<string, unknown> }> = [];
   private readonly throughput: ThroughputPoint[] = [];
 
   private ensureCurrentThroughputPoint(): ThroughputPoint {
@@ -64,12 +64,13 @@ export class InMemorySyncMonitor implements SyncMonitor {
     throughputPoint.deletes += 1;
   }
 
-  recordError(error: unknown, context?: string): void {
+  recordError(error: unknown, context?: string, data?: Record<string, unknown>): void {
     this.counters.errors += 1;
     this.recentErrors.unshift({
       at: new Date().toISOString(),
       message: error instanceof Error ? error.message : String(error),
-      context
+      context,
+      data
     });
     if (this.recentErrors.length > 20) {
       this.recentErrors.length = 20;

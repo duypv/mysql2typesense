@@ -194,7 +194,7 @@ export interface SyncMonitorSnapshot {
     errors: number;
   };
   perTable: Record<string, { initialDocuments: number; upserts: number; deletes: number }>;
-  recentErrors: Array<{ at: string; message: string; context?: string }>;
+  recentErrors: Array<{ at: string; message: string; context?: string; data?: Record<string, unknown> }>;
   throughput: ThroughputPoint[];
 }
 
@@ -203,7 +203,7 @@ export interface SyncMonitor {
   markMode(mode: "idle" | "initial" | "realtime"): void;
   recordInitialBatch(table: string, count: number): void;
   recordRealtimeEvent(table: string, operation: ChangeOperation): void;
-  recordError(error: unknown, context?: string): void;
+  recordError(error: unknown, context?: string, data?: Record<string, unknown>): void;
   snapshot(): SyncMonitorSnapshot;
   toPrometheusMetrics(): string;
 }

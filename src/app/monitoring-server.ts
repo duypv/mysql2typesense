@@ -339,6 +339,8 @@ function dashboardHtml(): string {
     .metric b { display: block; font-size: 20px; margin-top: 4px; }
     table { width: 100%; border-collapse: collapse; }
     th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--line); }
+    tr.clickable { cursor: pointer; }
+    tr.clickable:hover td { background: var(--accent-soft); }
     button {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -392,9 +394,112 @@ function dashboardHtml(): string {
         grid-template-columns: 1fr;
       }
     }
+    /* Error detail modal */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: rgba(15, 23, 34, 0.65);
+      backdrop-filter: blur(3px);
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 24px;
+      max-width: 860px;
+      width: calc(100vw - 32px);
+      max-height: 90vh;
+      overflow-y: auto;
+      box-shadow: 0 24px 64px rgba(0,0,0,0.25);
+    }
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .modal-header h2 { margin: 0; font-size: 17px; }
+    .modal-close {
+      border: none;
+      background: transparent;
+      font-size: 20px;
+      cursor: pointer;
+      color: var(--muted);
+      padding: 4px 8px;
+      border-radius: 6px;
+    }
+    .modal-close:hover { background: var(--line); color: var(--text); }
+    .modal-field { margin-bottom: 14px; }
+    .modal-label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .modal-value {
+      font-size: 13px;
+      word-break: break-word;
+    }
+    .modal-pre {
+      background: #f6f8fa;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 380px;
+      overflow-y: auto;
+      margin: 0;
+    }
+    .modal-pre .json-key { color: #0550ae; }
+    .modal-pre .json-str { color: #116329; }
+    .modal-pre .json-num { color: #953800; }
+    .modal-pre .json-bool { color: #8250df; }
+    .modal-pre .json-null { color: #b42318; }
+    .modal-actions { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+    .error-hint { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
   </style>
 </head>
 <body>
+  <!-- Error detail modal -->
+  <div class="modal-backdrop" id="errorModal" role="dialog" aria-modal="true" aria-label="Error Detail">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Error Detail</h2>
+        <button class="modal-close" id="modalCloseBtn" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-field">
+        <div class="modal-label">Time</div>
+        <div class="modal-value" id="modalAt"></div>
+      </div>
+      <div class="modal-field">
+        <div class="modal-label">Context</div>
+        <div class="modal-value" id="modalContext"></div>
+      </div>
+      <div class="modal-field">
+        <div class="modal-label">Error Message</div>
+        <pre class="modal-pre" id="modalMessage" style="color:var(--danger);"></pre>
+      </div>
+      <div class="modal-field" id="modalDataField">
+        <div class="modal-label">Document Data (caused the error)</div>
+        <pre class="modal-pre" id="modalData"></pre>
+      </div>
+      <div class="modal-actions">
+        <button id="modalCopyBtn">Copy JSON</button>
+        <button id="modalCopyErrBtn">Copy Error</button>
+        <button id="modalCloseBtnBottom">Close</button>
+      </div>
+    </div>
+  </div>
   <div class="layout">
     <aside class="sidebar">
       <div class="brand">Sync Dashboard</div>
@@ -475,6 +580,7 @@ function dashboardHtml(): string {
 
       <section class="card" id="section-errors">
         <h2>Recent Errors</h2>
+        <div class="error-hint">Click a row to see full error detail and document data.</div>
         <table>
           <thead>
             <tr><th>Time</th><th>Context</th><th>Message</th></tr>
@@ -651,12 +757,104 @@ function dashboardHtml(): string {
       });
     }
 
+    function syntaxHighlightJson(json) {
+      return json
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, (match) => {
+          if (/^"/.test(match)) {
+            return /:$/.test(match)
+              ? '<span class="json-key">' + match + '</span>'
+              : '<span class="json-str">' + match + '</span>';
+          }
+          if (/true|false/.test(match)) return '<span class="json-bool">' + match + '</span>';
+          if (/null/.test(match)) return '<span class="json-null">' + match + '</span>';
+          return '<span class="json-num">' + match + '</span>';
+        });
+    }
+
+    let currentErrorData = null;
+    let currentErrorMessage = '';
+
+    function openErrorModal(error) {
+      currentErrorData = error.data ?? null;
+      currentErrorMessage = error.message;
+      document.getElementById('modalAt').textContent = error.at;
+      document.getElementById('modalContext').textContent = error.context || '—';
+      document.getElementById('modalMessage').textContent = error.message;
+      const dataField = document.getElementById('modalDataField');
+      const dataEl = document.getElementById('modalData');
+      if (currentErrorData) {
+        const formatted = JSON.stringify(currentErrorData, null, 2);
+        dataEl.innerHTML = syntaxHighlightJson(formatted);
+        dataField.style.display = '';
+      } else {
+        dataField.style.display = 'none';
+      }
+      document.getElementById('errorModal').classList.add('open');
+    }
+
+    function closeErrorModal() {
+      document.getElementById('errorModal').classList.remove('open');
+    }
+
+    document.getElementById('modalCloseBtn').addEventListener('click', closeErrorModal);
+    document.getElementById('modalCloseBtnBottom').addEventListener('click', closeErrorModal);
+    document.getElementById('errorModal').addEventListener('click', (e) => {
+      if (e.target === document.getElementById('errorModal')) closeErrorModal();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeErrorModal();
+    });
+    document.getElementById('modalCopyBtn').addEventListener('click', async () => {
+      if (!currentErrorData) return;
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(currentErrorData, null, 2));
+        const btn = document.getElementById('modalCopyBtn');
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy JSON'; }, 2000);
+      } catch {}
+    });
+    document.getElementById('modalCopyErrBtn').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(currentErrorMessage);
+        const btn = document.getElementById('modalCopyErrBtn');
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy Error'; }, 2000);
+      } catch {}
+    });
+
     function renderErrors(errors) {
       const body = document.getElementById('errors');
       body.innerHTML = '';
+      if (errors.length === 0) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td colspan="3" class="muted" style="text-align:center;padding:16px;">No errors recorded.</td>';
+        body.appendChild(tr);
+        return;
+      }
       errors.forEach((error) => {
         const tr = document.createElement('tr');
-        tr.innerHTML = '<td>' + error.at + '</td><td>' + (error.context || '-') + '</td><td>' + error.message + '</td>';
+        tr.className = 'clickable';
+        tr.title = 'Click to see error detail' + (error.data ? ' and document data' : '');
+        const time = document.createElement('td');
+        time.style.whiteSpace = 'nowrap';
+        time.textContent = error.at;
+        const ctx = document.createElement('td');
+        ctx.style.whiteSpace = 'nowrap';
+        ctx.textContent = error.context || '—';
+        const msg = document.createElement('td');
+        msg.style.color = 'var(--danger)';
+        msg.textContent = error.message.length > 120 ? error.message.slice(0, 120) + '…' : error.message;
+        if (error.data) {
+          const badge = document.createElement('span');
+          badge.style.cssText = 'margin-left:6px;font-size:10px;background:#e6f4f7;color:#0b6b7a;border:1px solid #0b6b7a;border-radius:4px;padding:1px 5px;vertical-align:middle;';
+          badge.textContent = 'data';
+          msg.appendChild(badge);
+        }
+        tr.appendChild(time);
+        tr.appendChild(ctx);
+        tr.appendChild(msg);
+        tr.addEventListener('click', () => openErrorModal(error));
         body.appendChild(tr);
       });
     }

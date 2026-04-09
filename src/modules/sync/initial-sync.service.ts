@@ -44,7 +44,7 @@ export class InitialSyncService {
                 await withRetry(() => this.documentIndexer.upsertDocument(table, document), this.retryConfig);
                 imported += 1;
               } catch (documentError) {
-                this.monitor.recordError(documentError, `initial:${tableKey}:document:${document.id}`);
+                this.monitor.recordError(documentError, `initial:${tableKey}:document:${document.id}`, document as Record<string, unknown>);
               }
             }
           }
