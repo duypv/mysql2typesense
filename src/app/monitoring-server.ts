@@ -6,7 +6,7 @@ import { URL } from "node:url";
 import type { Logger } from "pino";
 import type { Client } from "typesense";
 
-import type { JoinReferenceDiagnosticsReport, SyncMonitor } from "../core/types.js";
+import type { JoinReferenceDiagnosticsReport, ResetStatusSnapshot, SyncMonitor } from "../core/types.js";
 
 export interface MonitoringServerOptions {
   host: string;
@@ -19,6 +19,7 @@ export interface MonitoringServerOptions {
   updateCollectionSchema: (collectionName: string) => Promise<{ ok: boolean; reason?: string }>;
   resetTypesense: () => Promise<{ ok: boolean; reason?: string }>;
   getJoinReferenceDiagnostics: () => Promise<JoinReferenceDiagnosticsReport>;
+  getResetStatus: () => ResetStatusSnapshot;
   getDiscoveredTables: () => {
     autoDiscoveryEnabled: boolean;
     startupDiscovered: string[];
@@ -81,6 +82,7 @@ function isAdminRoute(pathname: string): boolean {
     pathname.startsWith("/api/reindex") ||
     pathname.startsWith("/api/update-schema") ||
     pathname === "/api/reset" ||
+    pathname === "/api/reset-status" ||
     pathname === "/api/join-integrity" ||
     pathname === "/api/discovered-tables"
   );
@@ -227,6 +229,7 @@ export function startMonitoringServer(options: MonitoringServerOptions): Server 
     updateCollectionSchema,
     resetTypesense,
     getJoinReferenceDiagnostics,
+    getResetStatus,
     getDiscoveredTables
   } = options;
 
@@ -267,6 +270,11 @@ export function startMonitoringServer(options: MonitoringServerOptions): Server 
       if (request.method === "GET" && url.pathname === "/api/join-integrity") {
         const diagnostics = await getJoinReferenceDiagnostics();
         sendJson(response, 200, diagnostics);
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/reset-status") {
+        sendJson(response, 200, getResetStatus());
         return;
       }
 

@@ -14,6 +14,7 @@ async function main() {
   });
 
   await app.initialSyncService.run(app.tables);
+  await app.alignCheckpointToCurrentBinlog("startup-initial-sync");
   app.logger.info("Initial sync completed, switching to realtime mode");
   await app.realtimeSyncService.run();
 }

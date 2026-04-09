@@ -132,6 +132,18 @@ export interface JoinReferenceDiagnosticsReport {
   rows: JoinReferenceDiagnosticRow[];
 }
 
+export interface ResetStatusSnapshot {
+  status: "idle" | "running" | "completed" | "failed";
+  phase: "idle" | "phase-1-initial-sync" | "phase-2-force-schema";
+  currentPhase: number;
+  totalPhases: number;
+  startedAt?: string;
+  finishedAt?: string;
+  updatedAt: string;
+  message?: string;
+  error?: string;
+}
+
 export interface SyncConfigFile {
   database?: DatabaseSyncConfig;
   tables?: TableSyncConfigSeed[];

@@ -1,10 +1,11 @@
 import type { Logger } from "pino";
 import { createClient } from "redis";
 import type { Server } from "node:http";
+import type { RowDataPacket } from "mysql2/promise";
 
 import { loadConfig } from "../config/env.js";
 import { createLogger } from "../config/logger.js";
-import type { AppConfig, BinlogCheckpoint, CheckpointStore, TableSyncConfig } from "../core/types.js";
+import type { AppConfig, BinlogCheckpoint, CheckpointStore, ResetStatusSnapshot, TableSyncConfig } from "../core/types.js";
 import { FileCheckpointStore } from "../modules/checkpoint/file-checkpoint-store.js";
 import { RedisCheckpointStore } from "../modules/checkpoint/redis-checkpoint-store.js";
 import { MySqlBinlogListener } from "../modules/mysql/binlog-listener.js";
@@ -28,6 +29,7 @@ export interface AppContext {
   initialSyncService: InitialSyncService;
   realtimeSyncService: RealtimeSyncService;
   monitor: InMemorySyncMonitor;
+  alignCheckpointToCurrentBinlog(context?: string): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -70,6 +72,23 @@ export async function bootstrap(): Promise<AppContext> {
   let tableRefreshTimer: NodeJS.Timeout | null = null;
   let refreshInProgress = false;
   let monitoringServer: Server | null = null;
+  let resetInProgress = false;
+  let resetStatus: ResetStatusSnapshot = {
+    status: "idle",
+    phase: "idle",
+    currentPhase: 0,
+    totalPhases: 2,
+    updatedAt: new Date().toISOString(),
+    message: "No reset has been started yet"
+  };
+
+  const setResetStatus = (patch: Partial<ResetStatusSnapshot>) => {
+    resetStatus = {
+      ...resetStatus,
+      ...patch,
+      updatedAt: new Date().toISOString()
+    };
+  };
 
   if (autoDatabaseMode && resolvedTables.length === 0) {
     logger.warn(
@@ -89,9 +108,59 @@ export async function bootstrap(): Promise<AppContext> {
     monitor
   );
 
+  const realtimeSyncService = new RealtimeSyncService(
+    binlogListener,
+    collectionManager,
+    documentIndexer,
+    transformer,
+    checkpointStore,
+    config.sync.retry,
+    logger,
+    monitor
+  );
+
+  const alignCheckpointToCurrentBinlog = async (context = "runtime") => {
+    try {
+      let rows: RowDataPacket[] = [];
+      let statusQuery = "SHOW BINARY LOG STATUS";
+      try {
+        const [binaryStatusRows] = await mysqlPool.query<RowDataPacket[]>("SHOW BINARY LOG STATUS");
+        rows = binaryStatusRows;
+      } catch {
+        // Compatibility fallback for older MySQL versions.
+        statusQuery = "SHOW MASTER STATUS";
+        const [masterStatusRows] = await mysqlPool.query<RowDataPacket[]>("SHOW MASTER STATUS");
+        rows = masterStatusRows;
+      }
+
+      const first = rows[0];
+      const filename = first?.File ? String(first.File) : undefined;
+      const position = first?.Position !== undefined ? Number(first.Position) : undefined;
+      if (!filename || Number.isNaN(position)) {
+        logger.warn({ context, statusQuery, rows: rows.length }, "Checkpoint align skipped: status query returned no file/position");
+        return;
+      }
+
+      const checkpoint: BinlogCheckpoint = {
+        filename,
+        position,
+        updatedAt: new Date().toISOString()
+      };
+      await checkpointStore.save(checkpoint);
+      logger.info({ context, statusQuery, filename, position }, "Aligned binlog checkpoint to current master position");
+    } catch (error) {
+      logger.warn({ error, context }, "Failed to align binlog checkpoint to current master position");
+    }
+  };
+
   if (autoDatabaseMode) {
     const runDiscoveryWave = async (trigger: "startup" | "interval") => {
       if (refreshInProgress) {
+        return;
+      }
+
+      if (resetInProgress) {
+        logger.info({ trigger }, "Skipping discovery wave while reset is in progress");
         return;
       }
 
@@ -228,6 +297,7 @@ export async function bootstrap(): Promise<AppContext> {
         reindexInFlight.add(collectionName);
         try {
           await initialSyncService.run([table]);
+          monitor.markMode("realtime");
           return { ok: true };
         } catch (error) {
           monitor.recordError(error, `reindex:${collectionName}`);
@@ -297,6 +367,7 @@ export async function bootstrap(): Promise<AppContext> {
         reindexInFlight.add(collectionName);
         try {
           await initialSyncService.run(backfillTables);
+          monitor.markMode("realtime");
           logger.info(
             {
               collection: collectionName,
@@ -316,8 +387,44 @@ export async function bootstrap(): Promise<AppContext> {
         }
       },
       resetTypesense: async () => {
+        let realtimeStopped = false;
         try {
+          if (resetInProgress) {
+            return { ok: false, reason: "Reset already in progress" };
+          }
+
+          resetInProgress = true;
+          const startedAt = new Date().toISOString();
+          setResetStatus({
+            status: "running",
+            phase: "phase-1-initial-sync",
+            currentPhase: 1,
+            totalPhases: 2,
+            startedAt,
+            finishedAt: undefined,
+            error: undefined,
+            message: "Reset started: refreshing configs and running phase 1 initial sync"
+          });
+
           logger.info("Reset: started");
+
+          try {
+            logger.info("Reset: stopping realtime listener");
+            await binlogListener.stop();
+            realtimeStopped = true;
+            setResetStatus({
+              status: "running",
+              phase: "phase-1-initial-sync",
+              currentPhase: 1,
+              message: "Reset started: realtime listener paused, refreshing configs and running phase 1 initial sync"
+            });
+          } catch (error) {
+            logger.error({ error }, "Reset: failed to stop realtime listener");
+            return {
+              ok: false,
+              reason: error instanceof Error ? error.message : String(error)
+            };
+          }
 
           // Delete all Typesense collections
           const collections = await typesenseClient.collections().retrieve();
@@ -399,6 +506,14 @@ export async function bootstrap(): Promise<AppContext> {
             await initialSyncService.run(resolvedTables);
             logger.info({ tableCount: resolvedTables.length }, "Reset: full initial sync completed");
           } catch (error) {
+            setResetStatus({
+              status: "failed",
+              phase: "phase-1-initial-sync",
+              currentPhase: 1,
+              finishedAt: new Date().toISOString(),
+              message: "Reset failed during phase 1 initial sync",
+              error: error instanceof Error ? error.message : String(error)
+            });
             monitor.recordError(error, "reset");
             logger.error({ error }, "Reset initial sync failed");
             return {
@@ -410,10 +525,24 @@ export async function bootstrap(): Promise<AppContext> {
           // Extra safety pass requested: force update schema for all collections after reset completes.
           // This runs one more global initial sync to ensure all schemas are reconciled in a single pass.
           try {
+            setResetStatus({
+              status: "running",
+              phase: "phase-2-force-schema",
+              currentPhase: 2,
+              message: "Reset phase 1 completed. Running phase 2 force schema update for all collections"
+            });
             logger.info({ tableCount: resolvedTables.length }, "Reset: force update schema for all collections (post-reset pass)");
             await initialSyncService.run(resolvedTables);
             logger.info({ tableCount: resolvedTables.length }, "Reset: post-reset force schema update completed");
           } catch (error) {
+            setResetStatus({
+              status: "failed",
+              phase: "phase-2-force-schema",
+              currentPhase: 2,
+              finishedAt: new Date().toISOString(),
+              message: "Reset failed during phase 2 force schema update",
+              error: error instanceof Error ? error.message : String(error)
+            });
             monitor.recordError(error, "reset:force-update-all");
             logger.error({ error }, "Reset post-pass force schema update failed");
             return {
@@ -424,19 +553,56 @@ export async function bootstrap(): Promise<AppContext> {
 
           // Restore realtime mode after reset completes
           monitor.markMode("realtime");
+          await alignCheckpointToCurrentBinlog("reset-post-phase2");
+          setResetStatus({
+            status: "completed",
+            phase: "phase-2-force-schema",
+            currentPhase: 2,
+            finishedAt: new Date().toISOString(),
+            message: "Reset completed successfully and switched back to realtime mode",
+            error: undefined
+          });
           logger.info({ tableCount: resolvedTables.length }, "Reset: completed and switched back to realtime mode");
           return { ok: true };
         } catch (error) {
+          setResetStatus({
+            status: "failed",
+            phase: resetStatus.phase,
+            currentPhase: resetStatus.currentPhase,
+            finishedAt: new Date().toISOString(),
+            message: "Reset failed with unexpected error",
+            error: error instanceof Error ? error.message : String(error)
+          });
           monitor.recordError(error, "reset");
           return {
             ok: false,
             reason: error instanceof Error ? error.message : String(error)
           };
+        } finally {
+          if (realtimeStopped) {
+            try {
+              logger.info("Reset: restarting realtime listener");
+              await realtimeSyncService.run();
+              logger.info("Reset: realtime listener restarted");
+            } catch (error) {
+              setResetStatus({
+                status: "failed",
+                phase: resetStatus.phase,
+                currentPhase: resetStatus.currentPhase,
+                finishedAt: new Date().toISOString(),
+                message: "Reset finished but failed to restart realtime listener",
+                error: error instanceof Error ? error.message : String(error)
+              });
+              logger.error({ error }, "Reset: failed to restart realtime listener");
+            }
+          }
+          resetInProgress = false;
         }
       },
       getJoinReferenceDiagnostics: async () => {
         return collectionManager.getJoinReferenceIntegrityReport(resolvedTables);
       },
+      getResetStatus: () => ({ ...resetStatus }),
       getDiscoveredTables: () => ({
         autoDiscoveryEnabled: autoDatabaseMode,
         startupDiscovered: Array.from(startupDiscoveredTables).sort(),
@@ -452,16 +618,8 @@ export async function bootstrap(): Promise<AppContext> {
     logger,
     monitor,
     initialSyncService,
-    realtimeSyncService: new RealtimeSyncService(
-      binlogListener,
-      collectionManager,
-      documentIndexer,
-      transformer,
-      checkpointStore,
-      config.sync.retry,
-      logger,
-      monitor
-    ),
+    realtimeSyncService,
+    alignCheckpointToCurrentBinlog,
     async dispose() {
       monitor.markMode("idle");
       if (tableRefreshTimer) {

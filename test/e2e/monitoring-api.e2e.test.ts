@@ -106,6 +106,11 @@ describe.skipIf(SKIP)("monitoring API — authentication", () => {
     expect(res.status).toBe(401);
   });
 
+  it("GET /api/reset-status without auth returns 401", async () => {
+    const res = await monGet("/api/reset-status", false);
+    expect(res.status).toBe(401);
+  });
+
   it("POST /api/reset without auth returns 401", async () => {
     const res = await monPost("/api/reset", false);
     expect(res.status).toBe(401);
@@ -183,6 +188,23 @@ describe.skipIf(SKIP)("monitoring API — admin endpoints (with auth)", () => {
     expect(typeof body.passed).toBe("number");
     expect(typeof body.failed).toBe("number");
     expect(Array.isArray(body.rows)).toBe(true);
+  });
+
+  it("GET /api/reset-status returns phase progress snapshot", async () => {
+    const res = await monGet("/api/reset-status", true);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      status: string;
+      phase: string;
+      currentPhase: number;
+      totalPhases: number;
+      updatedAt: string;
+    };
+    expect(["idle", "running", "completed", "failed"]).toContain(body.status);
+    expect(["idle", "phase-1-initial-sync", "phase-2-force-schema"]).toContain(body.phase);
+    expect(typeof body.currentPhase).toBe("number");
+    expect(typeof body.totalPhases).toBe("number");
+    expect(typeof body.updatedAt).toBe("string");
   });
 
   it("GET /dashboard with auth returns 200 HTML", async () => {

@@ -479,6 +479,8 @@
           <div>
             <b>Reset Typesense</b>
             <div class="muted-note">Remove all Typesense data, reset checkpoint binlog (Redis/file), and resynchronize from the beginning.</div>
+            <div class="muted-note" id="resetStatusLine">Reset status: loading...</div>
+            <div class="muted-note" id="resetStatusMeta"></div>
           </div>
           <button id="resetBtn" class="danger" style="border-color:#b42318;">Reset Typesense</button>
         </div>
@@ -941,6 +943,37 @@
       });
     }
 
+    async function renderResetStatus() {
+      const line = document.getElementById('resetStatusLine');
+      const meta = document.getElementById('resetStatusMeta');
+      try {
+        const payload = await fetchJson('/api/reset-status');
+        const phaseLabelMap = {
+          'idle': 'Idle',
+          'phase-1-initial-sync': 'Phase 1 - Initial Sync',
+          'phase-2-force-schema': 'Phase 2 - Force Schema'
+        };
+        const phaseLabel = phaseLabelMap[payload.phase] || payload.phase;
+        const phaseProgress = payload.currentPhase > 0
+          ? (' | phase ' + payload.currentPhase + '/' + payload.totalPhases)
+          : '';
+
+        line.textContent =
+          'Reset status: ' + String(payload.status).toUpperCase() +
+          ' | ' + phaseLabel + phaseProgress;
+
+        const metaParts = [];
+        if (payload.message) metaParts.push(payload.message);
+        if (payload.startedAt) metaParts.push('Started: ' + payload.startedAt);
+        if (payload.finishedAt) metaParts.push('Finished: ' + payload.finishedAt);
+        if (payload.error) metaParts.push('Error: ' + payload.error);
+        meta.textContent = metaParts.join(' | ');
+      } catch (e) {
+        line.textContent = 'Reset status: unavailable';
+        meta.textContent = e && e.message ? e.message : 'Failed to load reset status';
+      }
+    }
+
     // ---------- error modal ----------
     function syntaxHighlightJson(json) {
       return json
@@ -1178,6 +1211,7 @@
         const latest = (status.throughput || []).at(-1) || { upserts: 0, deletes: 0 };
         document.getElementById('rateSummary').textContent =
           'Current: ' + latest.upserts + ' upserts/s, ' + latest.deletes + ' deletes/s';
+        await renderResetStatus();
         await renderDiscoveredTables();
         await renderJoinIntegrity();
         await renderCollections();
