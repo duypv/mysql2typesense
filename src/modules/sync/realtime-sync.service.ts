@@ -36,6 +36,22 @@ export class RealtimeSyncService {
             );
           }
         } else if (event.after) {
+          const previousPrimaryValue = event.before?.[event.table.primaryKey];
+          const currentPrimaryValue = event.after[event.table.primaryKey];
+
+          if (
+            previousPrimaryValue !== undefined &&
+            previousPrimaryValue !== null &&
+            currentPrimaryValue !== undefined &&
+            currentPrimaryValue !== null &&
+            String(previousPrimaryValue) !== String(currentPrimaryValue)
+          ) {
+            await withRetry(
+              () => this.documentIndexer.deleteDocument(event.table, String(previousPrimaryValue)),
+              this.retryConfig
+            );
+          }
+
           const document = await this.transformer.toDocument(event.after, event.table);
           await withRetry(() => this.documentIndexer.upsertDocument(event.table, document), this.retryConfig);
         }

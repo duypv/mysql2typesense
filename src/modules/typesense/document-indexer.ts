@@ -51,6 +51,15 @@ export class TypesenseDocumentIndexer {
   }
 
   async deleteDocument(table: TableSyncConfig, documentId: string): Promise<void> {
-    await this.client.collections(table.collection).documents(documentId).delete();
+    try {
+      await this.client.collections(table.collection).documents(documentId).delete();
+    } catch (error: unknown) {
+      const status = (error as { httpStatus?: number })?.httpStatus;
+      if (status === 404) {
+        // Delete is idempotent: if the document is already gone, treat as success.
+        return;
+      }
+      throw error;
+    }
   }
 }

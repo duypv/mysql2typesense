@@ -13,7 +13,7 @@
  */
 
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import { closeMysqlPool, mysqlQuery, mysqlWrite, poll, SKIP, tsSearch } from "./helpers.js";
+import { closeMysqlPool, mysqlQuery, mysqlWrite, poll, SKIP, TS_BASE, TS_HEADERS, tsGet, tsSearch } from "./helpers.js";
 
 // ---------------------------------------------------------------------------
 // Realtime sync — INSERT
@@ -266,6 +266,47 @@ describe.skipIf(SKIP)("realtime sync — UPDATE", () => {
       }
     }
   );
+
+  it(
+    "primary key change removes old document id and creates new id",
+    { timeout: 30_000 },
+    async () => {
+      const oldId = testUserId as number;
+      let newId = oldId + 100_000;
+
+      // Avoid PK collision if this range is already occupied.
+      for (let i = 0; i < 20; i += 1) {
+        const existing = await mysqlQuery<{ c: number }>("SELECT COUNT(*) AS c FROM users WHERE id = ?", [newId]);
+        if ((existing[0]?.c ?? 0) === 0) break;
+        newId += 1;
+      }
+
+      await poll(
+        async () => {
+          const res = await tsGet(`/collections/users/documents/${encodeURIComponent(String(oldId))}`);
+          return res.status === 200 ? true : null;
+        },
+        { timeout: 12_000, label: `Typesense doc ${oldId} before PK update` }
+      );
+
+      await mysqlQuery("UPDATE users SET id = ?, updated_at = NOW() WHERE id = ?", [newId, oldId]);
+      testUserId = newId;
+
+      await poll(
+        async () => {
+          const oldRes = await tsGet(`/collections/users/documents/${encodeURIComponent(String(oldId))}`);
+          const newRes = await tsGet(`/collections/users/documents/${encodeURIComponent(String(newId))}`);
+          return oldRes.status === 404 && newRes.status === 200 ? true : null;
+        },
+        { timeout: 12_000, label: "old id removed and new id created in Typesense" }
+      );
+
+      const oldFinal = await tsGet(`/collections/users/documents/${encodeURIComponent(String(oldId))}`);
+      const newFinal = await tsGet(`/collections/users/documents/${encodeURIComponent(String(newId))}`);
+      expect(oldFinal.status).toBe(404);
+      expect(newFinal.status).toBe(200);
+    }
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -350,6 +391,75 @@ describe.skipIf(SKIP)("realtime sync — DELETE", () => {
 
       const data = await tsSearch("products", "sku", sku);
       expect(data.found).toBe(0);
+    }
+  );
+
+  it(
+    "delete event is idempotent when document was already removed in Typesense",
+    { timeout: 35_000 },
+    async () => {
+      const email = `e2e-idempotent-del-${Date.now()}@test.invalid`;
+      const followUpEmail = `e2e-idempotent-del-followup-${Date.now()}@test.invalid`;
+
+      const inserted = await mysqlWrite(
+        `INSERT INTO users (email, full_name, status, is_active, created_at, updated_at)
+         VALUES (?, 'E2E Idempotent Delete User', 'active', 1, NOW(), NOW())`,
+        [email]
+      );
+      const userId = inserted.insertId;
+
+      let followUpUserId: number | null = null;
+
+      try {
+        // Wait for initial sync into Typesense.
+        await poll(
+          async () => {
+            const data = await tsSearch<{ id: string }>("users", "email", email);
+            return data.found > 0 ? data : null;
+          },
+          { timeout: 12_000, label: "idempotent delete test user to appear in Typesense" }
+        );
+
+        // Manually remove the document first to simulate already-deleted state.
+        const preDeleteRes = await fetch(
+          `${TS_BASE}/collections/users/documents/${encodeURIComponent(String(userId))}`,
+          { method: "DELETE", headers: TS_HEADERS }
+        );
+        expect([200, 404]).toContain(preDeleteRes.status);
+
+        // Now delete in MySQL; realtime delete should not fail when Typesense returns 404.
+        await mysqlQuery("DELETE FROM users WHERE id = ?", [userId]);
+
+        // Confirm it stays absent.
+        await poll(
+          async () => {
+            const data = await tsSearch("users", "email", email);
+            return data.found === 0 ? true : null;
+          },
+          { timeout: 12_000, label: "already-deleted user remains absent after MySQL delete" }
+        );
+
+        // Companion assertion: realtime pipeline still processes subsequent events.
+        const followUp = await mysqlWrite(
+          `INSERT INTO users (email, full_name, status, is_active, created_at, updated_at)
+           VALUES (?, 'E2E Idempotent Delete Follow-up', 'active', 1, NOW(), NOW())`,
+          [followUpEmail]
+        );
+        followUpUserId = followUp.insertId;
+
+        await poll(
+          async () => {
+            const data = await tsSearch("users", "email", followUpEmail);
+            return data.found > 0 ? true : null;
+          },
+          { timeout: 12_000, label: "follow-up insert appears after idempotent delete event" }
+        );
+      } finally {
+        await mysqlQuery("DELETE FROM users WHERE id = ?", [userId]);
+        if (followUpUserId !== null) {
+          await mysqlQuery("DELETE FROM users WHERE id = ?", [followUpUserId]);
+        }
+      }
     }
   );
 });
