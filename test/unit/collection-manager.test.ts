@@ -256,6 +256,45 @@ describe("TypesenseCollectionManager.ensureCollection", () => {
       expect(updateMock).not.toHaveBeenCalled();
     });
 
+    it("drops and recreates when forceRecreate=true even if schema looks correct", async () => {
+      // Simulates the production scenario where Stock.StockID is non-optional in Typesense
+      // (so the schema checks pass) but Typesense v30 join validation still rejects it for
+      // subtle reasons (e.g. type mismatch from a very old run). forceRecreate guarantees
+      // a clean schema for join-target collections during initial sync.
+      const existing = [
+        { name: "id", type: "string" },
+        { name: "StockID", type: "int64", optional: false }, // looks correct
+        { name: "StockCode", type: "string", optional: true },
+      ];
+      const deleteMock = vi.fn().mockResolvedValue({});
+      const createMock = vi.fn().mockResolvedValue({});
+      const updateMock = vi.fn().mockResolvedValue({});
+      const client = {
+        collections: vi.fn((name?: string) => {
+          if (name) {
+            return {
+              retrieve: vi.fn().mockResolvedValue({ name, fields: existing }),
+              update: updateMock,
+              delete: deleteMock,
+            };
+          }
+          return { create: createMock };
+        }),
+      };
+      const manager = new TypesenseCollectionManager(client as any);
+      const config = makeTableConfig([
+        { name: "id", type: "string" },
+        { name: "StockID", type: "int64" },
+        { name: "StockCode", type: "string", optional: true },
+      ]);
+
+      await manager.ensureCollection(config, /* forceRecreate */ true);
+
+      expect(deleteMock).toHaveBeenCalledOnce();
+      expect(createMock).toHaveBeenCalledOnce();
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
     it("recreates field when join reference is newly added on existing field", async () => {
       const existing = [
         { name: "id", type: "string" },

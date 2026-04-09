@@ -1,3 +1,4 @@
+import type { Logger } from "pino";
 import type { Client } from "typesense";
 
 import type { TableSyncConfig, TypesenseFieldConfig } from "../../core/types.js";
@@ -5,9 +6,21 @@ import type { TableSyncConfig, TypesenseFieldConfig } from "../../core/types.js"
 export class TypesenseCollectionManager {
   private readonly synced = new Set<string>();
 
-  constructor(private readonly client: Client) {}
+  constructor(
+    private readonly client: Client,
+    private readonly logger?: Logger
+  ) {}
 
-  async ensureCollection(table: TableSyncConfig): Promise<void> {
+  /**
+   * Ensures the Typesense collection for `table` matches the desired schema.
+   *
+   * @param forceRecreate When true, always drop+recreate the collection even if the
+   *   schema looks structurally correct. Use this for join-target collections during
+   *   initial sync: a field can appear non-optional in the API response yet still fail
+   *   Typesense v30 join validation (e.g. if it was patched in from a very old run with
+   *   an incompatible type). Forced recreation guarantees a clean, canonical schema.
+   */
+  async ensureCollection(table: TableSyncConfig, forceRecreate = false): Promise<void> {
     const fields = table.typesense.fields.some((field) => field.name === "id")
       ? table.typesense.fields
       : [{ name: "id", type: "string" as const }, ...table.typesense.fields];
@@ -32,11 +45,20 @@ export class TypesenseCollectionManager {
     }
 
     if (!existing) {
+      this.logger?.info({ collection: table.collection }, "ensureCollection: creating (new)");
       await createCollection();
       return;
     }
 
     if (this.synced.has(table.collection)) {
+      return;
+    }
+
+    // Forced recreation requested (e.g. join target during initial sync).
+    if (forceRecreate) {
+      this.logger?.info({ collection: table.collection }, "ensureCollection: drop+recreate (forced — join target schema refresh)");
+      await this.client.collections(table.collection).delete();
+      await createCollection();
       return;
     }
 
@@ -58,16 +80,20 @@ export class TypesenseCollectionManager {
     );
     const existingFieldNames = new Set(existingByName.keys());
 
-    const hasMissingRequiredField = fields.some(
+    const missingRequiredField = fields.find(
       (want) => !want.optional && !existingFieldNames.has(want.name)
     );
-    const hasRequiredButOptionalField = fields.some((want) => {
+    const requiredButOptionalField = fields.find((want) => {
       if (want.optional) return false;
       const ex = existingByName.get(want.name);
       return ex !== undefined && ex.optional === true;
     });
 
-    if (hasMissingRequiredField || hasRequiredButOptionalField) {
+    if (missingRequiredField ?? requiredButOptionalField) {
+      const reason = missingRequiredField
+        ? `required field "${missingRequiredField.name}" is missing from existing collection`
+        : `required field "${requiredButOptionalField!.name}" exists but is optional in existing collection (was force-patched in a prior run)`;
+      this.logger?.info({ collection: table.collection, reason }, "ensureCollection: drop+recreate");
       await this.client.collections(table.collection).delete();
       await createCollection();
       return;
@@ -75,12 +101,15 @@ export class TypesenseCollectionManager {
 
     const updates = this.diffSchemaChanges(existing.fields ?? [], fields);
     if (updates.length > 0) {
+      this.logger?.info({ collection: table.collection, patchCount: updates.length }, "ensureCollection: patching schema");
       try {
         await this.client.collections(table.collection).update({ fields: updates as any });
       } catch {
         // Schema update may not be supported for some field types; continue anyway.
         // The document-indexer fallback to partial update handles missing fields.
       }
+    } else {
+      this.logger?.info({ collection: table.collection }, "ensureCollection: schema up-to-date, kept as-is");
     }
     this.synced.add(table.collection);
   }

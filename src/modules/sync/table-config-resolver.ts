@@ -377,5 +377,32 @@ export async function resolveTableConfigs(
     });
   }
 
+  // Cross-table enforcement: Typesense v30 requires join reference target fields to be
+  // non-optional. All non-PK columns are inferred as optional by default (to handle
+  // MySQL binlog partial events). If a column like "StockID" is the join target
+  // (reference="Stock.StockID") but not the MySQL primary key of Stock, it ends up
+  // optional=true in the desired schema — causing Typesense to reject joins with
+  // "Referenced field X not found in collection Y". Fix: strip optional from any field
+  // that is referenced as a join target in ANY other collection.
+  for (const srcTable of resolved) {
+    for (const srcField of srcTable.typesense.fields) {
+      if (!srcField.reference) continue;
+      const dotIdx = srcField.reference.indexOf(".");
+      if (dotIdx === -1) continue;
+      const targetCollectionName = srcField.reference.slice(0, dotIdx);
+      const targetFieldName = srcField.reference.slice(dotIdx + 1);
+      const targetTable = resolved.find(
+        (t) => t.collection === targetCollectionName || t.table === targetCollectionName
+      );
+      if (!targetTable) continue;
+      const fieldIdx = targetTable.typesense.fields.findIndex((f) => f.name === targetFieldName);
+      if (fieldIdx !== -1 && targetTable.typesense.fields[fieldIdx].optional) {
+        // Remove optional flag so the field is required — join targets must be non-optional.
+        const { optional: _remove, ...rest } = targetTable.typesense.fields[fieldIdx];
+        targetTable.typesense.fields[fieldIdx] = rest as TypesenseFieldConfig;
+      }
+    }
+  }
+
   return resolved;
 }

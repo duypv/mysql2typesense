@@ -403,3 +403,90 @@ describe("resolveTableConfigs — applyJoinMappingOverrides", () => {
     expect(scoreMapping?.type).toBe("int64");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cross-table join reference target enforcement
+// All non-PK columns are inferred as optional=true by default. If such a column
+// is the TARGET of a join reference from another table (e.g. Stock.StockID is
+// referenced by DrugBatchOutMaster.StockOutID), it must be made non-optional
+// in the target collection schema. Otherwise Typesense v30 rejects the join
+// with "Referenced field X not found in collection Y".
+// ---------------------------------------------------------------------------
+describe("resolveTableConfigs — cross-table join reference target enforcement", () => {
+  it("makes the referenced target field non-optional even when it is not the MySQL PK", async () => {
+    // Stock table: MySQL PK is 'id', StockID is a non-PK unique column → inferred as optional
+    const stockCols: ColumnSpec[] = [
+      { name: "id", mysqlType: "int(11)", primary: true },
+      { name: "StockID", mysqlType: "int(11)" }, // non-nullable, but not PK → optional by default
+      { name: "StockCode", mysqlType: "varchar(100)" }
+    ];
+    // DrugBatchOutMaster references Stock.StockID
+    const drugCols: ColumnSpec[] = [
+      { name: "id", mysqlType: "int(11)", primary: true },
+      { name: "StockOutID", mysqlType: "int(11)" }
+    ];
+    const introspector = makeIntrospector(stockCols);
+    vi.spyOn(introspector, "getColumns")
+      .mockResolvedValueOnce(
+        stockCols.map((c) => ({ name: c.name, mysqlType: c.mysqlType, nullable: false, primary: c.primary ?? false }))
+      )
+      .mockResolvedValueOnce(
+        drugCols.map((c) => ({ name: c.name, mysqlType: c.mysqlType, nullable: false, primary: c.primary ?? false }))
+      );
+
+    const joinConfigs: TableJoinConfig[] = [
+      {
+        table: "DrugBatchOutMaster",
+        fields: [{ name: "StockOutID", reference: "Stock.StockID", type: "int64" }]
+      }
+    ];
+
+    const [stockCfg, _drugCfg] = await resolveTableConfigs(
+      introspector,
+      "app",
+      [
+        { table: "Stock", database: "app" },
+        { table: "DrugBatchOutMaster", database: "app" }
+      ],
+      undefined,
+      joinConfigs
+    );
+
+    const stockIdField = stockCfg.typesense.fields.find((f) => f.name === "StockID");
+    expect(stockIdField).toBeDefined();
+    // Must NOT be optional — it is a join reference target
+    expect(stockIdField?.optional).toBeUndefined();
+  });
+
+  it("leaves non-referenced optional fields unchanged", async () => {
+    const stockCols: ColumnSpec[] = [
+      { name: "id", mysqlType: "int(11)", primary: true },
+      { name: "StockID", mysqlType: "int(11)" },
+      { name: "StockCode", mysqlType: "varchar(100)" }  // not a join target
+    ];
+    const drugCols: ColumnSpec[] = [
+      { name: "id", mysqlType: "int(11)", primary: true },
+      { name: "StockOutID", mysqlType: "int(11)" }
+    ];
+    const introspector = makeIntrospector(stockCols);
+    vi.spyOn(introspector, "getColumns")
+      .mockResolvedValueOnce(
+        stockCols.map((c) => ({ name: c.name, mysqlType: c.mysqlType, nullable: false, primary: c.primary ?? false }))
+      )
+      .mockResolvedValueOnce(
+        drugCols.map((c) => ({ name: c.name, mysqlType: c.mysqlType, nullable: false, primary: c.primary ?? false }))
+      );
+    const joinConfigs: TableJoinConfig[] = [
+      { table: "DrugBatchOutMaster", fields: [{ name: "StockOutID", reference: "Stock.StockID", type: "int64" }] }
+    ];
+    const [stockCfg] = await resolveTableConfigs(
+      introspector,
+      "app",
+      [{ table: "Stock", database: "app" }, { table: "DrugBatchOutMaster", database: "app" }],
+      undefined,
+      joinConfigs
+    );
+    const codeField = stockCfg.typesense.fields.find((f) => f.name === "StockCode");
+    expect(codeField?.optional).toBe(true); // not a join target → stays optional
+  });
+});

@@ -21,6 +21,25 @@ export class InitialSyncService {
   async run(tables: TableSyncConfig[]): Promise<void> {
     this.monitor.markMode("initial");
 
+    // Identify which collections are referenced as join targets by any other table.
+    // Typesense v30 strictly validates that join target fields are non-optional. A
+    // collection that was created in a previous run may have the target field in its
+    // schema yet still fail join validation for subtle reasons (e.g. the field type
+    // or optional flag was corrupted by an old patch). Forcing a fresh drop+recreate
+    // for every join target collection guarantees a canonical, known-good schema on
+    // every initial sync — safe because Phase 2 re-imports all data anyway.
+    const joinTargetCollections = new Set<string>();
+    for (const table of tables) {
+      for (const field of table.typesense.fields) {
+        if (field.reference) {
+          const dotIdx = field.reference.indexOf(".");
+          if (dotIdx !== -1) {
+            joinTargetCollections.add(field.reference.slice(0, dotIdx));
+          }
+        }
+      }
+    }
+
     // Phase 1: ensure ALL collection schemas exist before importing any data.
     // This is required for join references to resolve correctly: if table A references
     // collection B via a join field, Typesense validates the B schema at import time —
@@ -28,7 +47,8 @@ export class InitialSyncService {
     // are indexed before their referenced tables (due to alphabetical discovery order)
     // will fail with "Referenced field X not found in collection Y".
     for (const table of tables) {
-      await withRetry(() => this.collectionManager.ensureCollection(table), this.retryConfig);
+      const forceRecreate = joinTargetCollections.has(table.collection);
+      await withRetry(() => this.collectionManager.ensureCollection(table, forceRecreate), this.retryConfig);
     }
 
     // Phase 2: import data for all tables now that all schemas are in place.
