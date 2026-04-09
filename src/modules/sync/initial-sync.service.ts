@@ -21,9 +21,19 @@ export class InitialSyncService {
   async run(tables: TableSyncConfig[]): Promise<void> {
     this.monitor.markMode("initial");
 
+    // Phase 1: ensure ALL collection schemas exist before importing any data.
+    // This is required for join references to resolve correctly: if table A references
+    // collection B via a join field, Typesense validates the B schema at import time —
+    // even when async_reference is true. Without this pre-creation pass, tables that
+    // are indexed before their referenced tables (due to alphabetical discovery order)
+    // will fail with "Referenced field X not found in collection Y".
+    for (const table of tables) {
+      await withRetry(() => this.collectionManager.ensureCollection(table), this.retryConfig);
+    }
+
+    // Phase 2: import data for all tables now that all schemas are in place.
     for (const table of tables) {
       const tableKey = `${table.database}.${table.table}`;
-      await withRetry(() => this.collectionManager.ensureCollection(table), this.retryConfig);
 
       for await (const batch of this.sourceReader.scanTable(table, table.batchSize ?? this.batchSize)) {
         try {

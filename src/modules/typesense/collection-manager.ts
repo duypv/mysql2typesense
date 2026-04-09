@@ -12,22 +12,7 @@ export class TypesenseCollectionManager {
       ? table.typesense.fields
       : [{ name: "id", type: "string" as const }, ...table.typesense.fields];
 
-    try {
-      const existing = await this.client.collections(table.collection).retrieve();
-
-      if (!this.synced.has(table.collection)) {
-        const updates = this.diffSchemaChanges(existing.fields ?? [], fields);
-        if (updates.length > 0) {
-          try {
-            await this.client.collections(table.collection).update({ fields: updates as any });
-          } catch {
-            // Schema update may not be supported for some field types; continue anyway.
-            // The document-indexer fallback to partial update handles missing fields.
-          }
-        }
-        this.synced.add(table.collection);
-      }
-    } catch {
+    const createCollection = async () => {
       await this.client.collections().create({
         name: table.collection,
         fields,
@@ -37,7 +22,53 @@ export class TypesenseCollectionManager {
         symbols_to_index: table.typesense.symbolsToIndex
       });
       this.synced.add(table.collection);
+    };
+
+    let existing: Awaited<ReturnType<ReturnType<(typeof this.client)["collections"]>["retrieve"]>> | null = null;
+    try {
+      existing = await this.client.collections(table.collection).retrieve();
+    } catch {
+      // Collection does not exist yet — create it below.
     }
+
+    if (!existing) {
+      await createCollection();
+      return;
+    }
+
+    if (this.synced.has(table.collection)) {
+      return;
+    }
+
+    // Typesense only allows patching in new fields as optional=true.
+    // If the desired schema has non-optional fields that are missing from the existing
+    // collection (e.g. a primary-key field used as a join reference target), patching
+    // would leave them as optional, causing Typesense v30 join validation to reject them
+    // with "Referenced field X not found in collection Y". In that case, drop and recreate
+    // so the field is defined correctly from the start.
+    const existingFieldNames = new Set(
+      (existing.fields ?? []).map((f) => f.name).filter(Boolean)
+    );
+    const hasMissingRequiredField = fields.some(
+      (want) => !want.optional && !existingFieldNames.has(want.name)
+    );
+
+    if (hasMissingRequiredField) {
+      await this.client.collections(table.collection).delete();
+      await createCollection();
+      return;
+    }
+
+    const updates = this.diffSchemaChanges(existing.fields ?? [], fields);
+    if (updates.length > 0) {
+      try {
+        await this.client.collections(table.collection).update({ fields: updates as any });
+      } catch {
+        // Schema update may not be supported for some field types; continue anyway.
+        // The document-indexer fallback to partial update handles missing fields.
+      }
+    }
+    this.synced.add(table.collection);
   }
 
   /**

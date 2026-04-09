@@ -160,6 +160,7 @@ describe("TypesenseCollectionManager.ensureCollection", () => {
             return {
               retrieve: vi.fn().mockResolvedValue({ name, fields: existing }),
               update: updateMock,
+              delete: vi.fn().mockResolvedValue({}),
             };
           }
           return { create: vi.fn() };
@@ -176,6 +177,43 @@ describe("TypesenseCollectionManager.ensureCollection", () => {
       expect(updateMock).toHaveBeenCalledOnce();
       const { fields } = updateMock.mock.calls[0][0];
       expect(fields).toContainEqual(expect.objectContaining({ name: "new_field", type: "string" }));
+    });
+
+    it("drops and recreates collection when a non-optional field is missing from existing", async () => {
+      // Simulates: Stock collection exists but StockID (the primary-key / join target field)
+      // is absent. Patching it in would make it optional=true, which Typesense v30 rejects
+      // for join references. The collection must be dropped and recreated.
+      const existing = [{ name: "id", type: "string" }, { name: "StockCode", type: "string", optional: true }];
+      const deleteMock = vi.fn().mockResolvedValue({});
+      const createMock = vi.fn().mockResolvedValue({});
+      const updateMock = vi.fn().mockResolvedValue({});
+      const client = {
+        collections: vi.fn((name?: string) => {
+          if (name) {
+            return {
+              retrieve: vi.fn().mockResolvedValue({ name, fields: existing }),
+              update: updateMock,
+              delete: deleteMock,
+            };
+          }
+          return { create: createMock };
+        }),
+      };
+      const manager = new TypesenseCollectionManager(client as any);
+      const config = makeTableConfig([
+        { name: "id", type: "string" },
+        { name: "StockID", type: "int64" }, // non-optional primary-key field — MISSING from existing
+        { name: "StockCode", type: "string", optional: true },
+      ]);
+
+      await manager.ensureCollection(config);
+
+      // Must drop the old collection
+      expect(deleteMock).toHaveBeenCalledOnce();
+      // Must recreate with the full schema
+      expect(createMock).toHaveBeenCalledOnce();
+      // Must NOT attempt a partial patch
+      expect(updateMock).not.toHaveBeenCalled();
     });
 
     it("recreates field when join reference is newly added on existing field", async () => {
