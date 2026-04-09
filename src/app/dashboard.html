@@ -1,0 +1,800 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MySQL2Typesense Dashboard</title>
+  <style>
+    :root {
+      --bg: #f2f5f7;
+      --card: #ffffff;
+      --line: #d6dde3;
+      --text: #18212a;
+      --muted: #5d6773;
+      --accent: #0b6b7a;
+      --accent-soft: #e6f4f7;
+      --danger: #b42318;
+      --sidebar: #0f1722;
+      --sidebar-text: #d7e2ee;
+      --sidebar-active: #16485e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 10% 20%, #ffffff 0%, transparent 35%),
+        radial-gradient(circle at 90% 10%, #e8eef2 0%, transparent 30%),
+        linear-gradient(180deg, #eef2f5 0%, var(--bg) 100%);
+    }
+    .layout {
+      max-width: 1320px;
+      margin: 20px auto;
+      padding: 0 16px;
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+    .sidebar {
+      position: sticky;
+      top: 16px;
+      background: var(--sidebar);
+      color: var(--sidebar-text);
+      border-radius: 14px;
+      border: 1px solid #223246;
+      padding: 14px;
+      max-height: calc(100vh - 32px);
+      overflow: auto;
+    }
+    .brand {
+      font-size: 17px;
+      font-weight: 700;
+      margin: 4px 2px 14px;
+      color: #fff;
+    }
+    .sidebar-state {
+      border: 1px solid #2b3d52;
+      border-radius: 10px;
+      padding: 10px;
+      margin: 0 0 10px;
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--sidebar-text);
+      font-size: 12px;
+    }
+    .mode-pill {
+      display: inline-block;
+      border: 1px solid #37516c;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+    .mode-pill.idle   { background: #1e2b39; border-color: #37516c; }
+    .mode-pill.initial  { background: #4d3c12; border-color: #9f7a1f; color: #ffedbf; }
+    .mode-pill.realtime { background: #0f3f2a; border-color: #1f7a5a; color: #b7f2da; }
+    .countdown-ring {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--sidebar-text);
+      opacity: 0.75;
+    }
+    .countdown-ring svg { flex-shrink: 0; }
+    .countdown-ring circle.track { stroke: #2b3d52; }
+    .countdown-ring circle.prog  { stroke: #4f94bc; stroke-linecap: round; transition: stroke-dashoffset 1s linear; }
+    .menu { display: grid; gap: 8px; }
+    .menu-item {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      text-align: left;
+      border: 1px solid #2b3d52;
+      background: transparent;
+      color: var(--sidebar-text);
+      border-radius: 10px;
+      padding: 10px;
+      cursor: pointer;
+      transition: background-color .2s ease, border-color .2s ease;
+    }
+    .menu-item:hover { border-color: #3a5673; background: rgba(255,255,255,0.05); }
+    .menu-item.active { background: var(--sidebar-active); border-color: #4f94bc; color: #fff; }
+    .menu-error-badge {
+      min-width: 22px; padding: 1px 7px; border-radius: 999px;
+      background: #3b4f64; color: #fff; font-size: 11px;
+      text-align: center; font-weight: 700;
+    }
+    .menu-error-badge.alert { background: #b42318; }
+    .content { display: grid; gap: 16px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 16px;
+      scroll-margin-top: 12px;
+    }
+    /* Sections hidden by default; JS shows only the active one */
+    .section-panel { display: none; }
+    .section-panel.active { display: block; }
+    /* Overview is always shown at top */
+    #section-overview { display: block !important; }
+    h1 { margin: 0 0 6px; font-size: 28px; }
+    h2 { margin: 0 0 10px; font-size: 18px; }
+    .muted { color: var(--muted); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+    .metric { border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+    .metric b { display: block; font-size: 20px; margin-top: 4px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--line); }
+    tr.clickable { cursor: pointer; }
+    tr.clickable:hover td { background: var(--accent-soft); }
+    button {
+      border: 1px solid var(--line); border-radius: 8px;
+      background: #fff; padding: 6px 10px; cursor: pointer;
+    }
+    button:hover { border-color: var(--accent); }
+    .danger { color: var(--danger); }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .chart-wrap { width: 100%; height: 240px; }
+    #throughputChart { width: 100%; height: 240px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .legend { display: flex; gap: 12px; margin-top: 8px; color: var(--muted); }
+    .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; margin-right: 6px; border-radius: 2px; vertical-align: -1px; }
+    .legend .upserts::before { background: #1f7a5a; }
+    .legend .deletes::before { background: #b42318; }
+    .muted-note { margin-top: 6px; color: var(--muted); font-size: 13px; }
+    .pill {
+      display: inline-flex; align-items: center;
+      border: 1px solid var(--line); border-radius: 999px;
+      padding: 4px 10px; font-size: 12px;
+      margin-right: 6px; margin-bottom: 6px; background: #fff;
+    }
+    .pill.runtime { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+    /* Error detail modal */
+    .modal-backdrop {
+      display: none; position: fixed; inset: 0; z-index: 100;
+      background: rgba(15,23,34,0.65); backdrop-filter: blur(3px);
+      align-items: center; justify-content: center;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: 14px; padding: 24px;
+      max-width: 860px; width: calc(100vw - 32px);
+      max-height: 90vh; overflow-y: auto;
+      box-shadow: 0 24px 64px rgba(0,0,0,0.25);
+    }
+    .modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+    .modal-header h2 { margin: 0; font-size: 17px; }
+    .modal-close {
+      border: none; background: transparent; font-size: 20px;
+      cursor: pointer; color: var(--muted); padding: 4px 8px; border-radius: 6px;
+    }
+    .modal-close:hover { background: var(--line); color: var(--text); }
+    .modal-field { margin-bottom: 14px; }
+    .modal-label {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.6px; color: var(--muted); margin-bottom: 4px;
+    }
+    .modal-value { font-size: 13px; word-break: break-word; }
+    .modal-pre {
+      background: #f6f8fa; border: 1px solid var(--line); border-radius: 8px;
+      padding: 12px; font-family: "SF Mono","Cascadia Code","Consolas",monospace;
+      font-size: 12px; white-space: pre-wrap; word-break: break-all;
+      max-height: 380px; overflow-y: auto; margin: 0;
+    }
+    .modal-pre .json-key  { color: #0550ae; }
+    .modal-pre .json-str  { color: #116329; }
+    .modal-pre .json-num  { color: #953800; }
+    .modal-pre .json-bool { color: #8250df; }
+    .modal-pre .json-null { color: #b42318; }
+    .modal-actions { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+    .error-hint { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+    @media (max-width: 980px) {
+      .layout { grid-template-columns: 1fr; }
+      .sidebar { position: static; max-height: none; }
+      .menu { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 640px) {
+      .menu { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Error detail modal -->
+  <div class="modal-backdrop" id="errorModal" role="dialog" aria-modal="true" aria-label="Error Detail">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Error Detail</h2>
+        <button class="modal-close" id="modalCloseBtn" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-field">
+        <div class="modal-label">Time</div>
+        <div class="modal-value" id="modalAt"></div>
+      </div>
+      <div class="modal-field">
+        <div class="modal-label">Context</div>
+        <div class="modal-value" id="modalContext"></div>
+        <div id="modalContextDetail" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;"></div>
+      </div>
+      <div class="modal-field" id="modalAnalysisField">
+        <div class="modal-label">Error Analysis &amp; Fix Suggestion</div>
+        <div id="modalAnalysis" style="font-size:13px;line-height:1.75;border:1px solid #fde8e8;border-radius:8px;padding:12px 14px;background:#fff8f8;"></div>
+      </div>
+      <div class="modal-field">
+        <div class="modal-label">Error Message</div>
+        <pre class="modal-pre" id="modalMessage" style="color:var(--danger);"></pre>
+      </div>
+      <div class="modal-field" id="modalDataField">
+        <div class="modal-label">Document Data <span style="font-weight:400;color:var(--muted);">(highlighted field = likely cause)</span></div>
+        <pre class="modal-pre" id="modalData"></pre>
+      </div>
+      <div class="modal-actions">
+        <button id="modalCopyReportBtn" style="background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600;">Copy Full Report</button>
+        <button id="modalCopyBtn">Copy JSON</button>
+        <button id="modalCloseBtnBottom">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">Sync Dashboard</div>
+      <div class="sidebar-state">
+        <div id="modePill" class="mode-pill idle">IDLE</div>
+        <div id="menuModeHint">Current mode: idle</div>
+        <div class="countdown-ring" id="countdownWrap">
+          <svg width="22" height="22" viewBox="0 0 22 22">
+            <circle class="track" cx="11" cy="11" r="9" fill="none" stroke-width="2.5"/>
+            <circle class="prog" id="countdownArc" cx="11" cy="11" r="9" fill="none" stroke-width="2.5"
+              stroke-dasharray="56.55" stroke-dashoffset="0" transform="rotate(-90 11 11)"/>
+          </svg>
+          <span id="countdownLabel">30s</span>
+        </div>
+      </div>
+      <div class="menu" id="sideMenu">
+        <button class="menu-item active" data-target="section-metrics">Overview &amp; Metrics</button>
+        <button class="menu-item" data-target="section-throughput">Realtime Throughput</button>
+        <button class="menu-item" data-target="section-per-table">Per Table</button>
+        <button class="menu-item" data-target="section-discovered">Discovered Tables</button>
+        <button class="menu-item" data-target="section-collections">Collections</button>
+        <button class="menu-item" data-target="section-errors">
+          <span>Recent Errors</span>
+          <span id="menuErrorCount" class="menu-error-badge">0</span>
+        </button>
+        <button class="menu-item" data-target="section-danger">Danger Zone</button>
+      </div>
+    </aside>
+
+    <main class="content">
+      <!-- Always-visible overview bar -->
+      <section class="card" id="section-overview">
+        <div class="row">
+          <div>
+            <h1>Sync Dashboard</h1>
+            <div class="muted" id="statusLine">Loading...</div>
+          </div>
+          <button id="refreshBtn">Refresh</button>
+        </div>
+      </section>
+
+      <!-- Switchable panels -->
+      <section class="card section-panel active" id="section-metrics">
+        <h2>Metrics</h2>
+        <div class="grid" id="metrics"></div>
+      </section>
+
+      <section class="card section-panel" id="section-throughput">
+        <h2>Realtime Throughput</h2>
+        <div class="chart-wrap">
+          <canvas id="throughputChart" width="1024" height="240"></canvas>
+        </div>
+        <div class="legend">
+          <span class="upserts">Upserts / sec</span>
+          <span class="deletes">Deletes / sec</span>
+        </div>
+        <div id="rateSummary" class="muted-note">Loading rates...</div>
+      </section>
+
+      <section class="card section-panel" id="section-per-table">
+        <h2>Per Table</h2>
+        <table>
+          <thead><tr><th>Table</th><th>Initial Docs</th><th>Upserts</th><th>Deletes</th></tr></thead>
+          <tbody id="tableStats"></tbody>
+        </table>
+      </section>
+
+      <section class="card section-panel" id="section-discovered">
+        <h2>Auto-Discovered Tables</h2>
+        <div class="muted-note" id="discoveryMode">Loading...</div>
+        <div id="discoveredTables"></div>
+      </section>
+
+      <section class="card section-panel" id="section-collections">
+        <h2>Typesense Collections</h2>
+        <table>
+          <thead><tr><th>Name</th><th>Documents</th><th>Action</th></tr></thead>
+          <tbody id="collections"></tbody>
+        </table>
+      </section>
+
+      <section class="card section-panel" id="section-errors">
+        <h2>Recent Errors</h2>
+        <div class="error-hint">Click a row to see full error detail and document data.</div>
+        <table>
+          <thead><tr><th>Time</th><th>Context</th><th>Message</th></tr></thead>
+          <tbody id="errors"></tbody>
+        </table>
+      </section>
+
+      <section class="card section-panel" id="section-danger" style="border-color:#b42318;">
+        <h2 class="danger">Danger Zone</h2>
+        <div class="row">
+          <div>
+            <b>Reset Typesense</b>
+            <div class="muted-note">Remove all Typesense data, reset checkpoint binlog (Redis/file), and resynchronize from the beginning.</div>
+          </div>
+          <button id="resetBtn" class="danger" style="border-color:#b42318;">Reset Typesense</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    // ---------- fetch helper ----------
+    async function fetchJson(url, options) {
+      const res = await fetch(url, options);
+      if (!res.ok) throw new Error('Request failed: ' + res.status + ' ' + url);
+      return res.json();
+    }
+
+    // ---------- section switching (single-panel view) ----------
+    const PANELS = Array.from(document.querySelectorAll('.section-panel'));
+    const menuItems = Array.from(document.querySelectorAll('#sideMenu .menu-item'));
+
+    function showSection(targetId) {
+      PANELS.forEach(p => p.classList.toggle('active', p.id === targetId));
+      menuItems.forEach(item => item.classList.toggle('active', item.getAttribute('data-target') === targetId));
+      localStorage.setItem('dash_section', targetId);
+    }
+
+    menuItems.forEach(item => {
+      item.addEventListener('click', () => {
+        const id = item.getAttribute('data-target');
+        if (id) showSection(id);
+      });
+    });
+
+    // Restore last-visited section
+    const savedSection = localStorage.getItem('dash_section');
+    if (savedSection && document.getElementById(savedSection)) {
+      showSection(savedSection);
+    } else {
+      showSection('section-metrics');
+    }
+
+    // ---------- countdown ring ----------
+    const REFRESH_INTERVAL_S = 30;
+    let countdownRemaining = REFRESH_INTERVAL_S;
+    const arc = document.getElementById('countdownArc');
+    const label = document.getElementById('countdownLabel');
+    const CIRCUMFERENCE = 56.55; // 2πr where r=9
+
+    function tickCountdown() {
+      countdownRemaining -= 1;
+      if (countdownRemaining < 0) countdownRemaining = REFRESH_INTERVAL_S;
+      const filled = (countdownRemaining / REFRESH_INTERVAL_S) * CIRCUMFERENCE;
+      arc.setAttribute('stroke-dashoffset', String(CIRCUMFERENCE - filled));
+      label.textContent = countdownRemaining + 's';
+    }
+    setInterval(tickCountdown, 1000);
+    tickCountdown();
+
+    // ---------- renderers ----------
+    function renderMetrics(counters) {
+      const root = document.getElementById('metrics');
+      root.innerHTML = '';
+      const entries = [
+        ['Initial Batches', counters.initialBatches],
+        ['Initial Documents', counters.initialDocuments],
+        ['Realtime Upserts', counters.realtimeUpserts],
+        ['Realtime Deletes', counters.realtimeDeletes],
+        ['Errors', counters.errors]
+      ];
+      for (const [lbl, val] of entries) {
+        const el = document.createElement('div');
+        el.className = 'metric';
+        el.innerHTML = '<span>' + lbl + '</span><b>' + val + '</b>';
+        root.appendChild(el);
+      }
+    }
+
+    function renderTableStats(perTable) {
+      const body = document.getElementById('tableStats');
+      body.innerHTML = '';
+      Object.entries(perTable).forEach(([table, stats]) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td>' + table + '</td><td>' + stats.initialDocuments + '</td><td>' + stats.upserts + '</td><td>' + stats.deletes + '</td>';
+        body.appendChild(tr);
+      });
+    }
+
+    function drawThroughputChart(points) {
+      const canvas = document.getElementById('throughputChart');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      const W = canvas.width, H = canvas.height;
+      ctx.clearRect(0, 0, W, H);
+      const pad = { top: 18, right: 16, bottom: 24, left: 36 };
+      const pw = W - pad.left - pad.right, ph = H - pad.top - pad.bottom;
+      ctx.strokeStyle = '#dad3c6'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pad.left, pad.top);
+      ctx.lineTo(pad.left, H - pad.bottom);
+      ctx.lineTo(W - pad.right, H - pad.bottom);
+      ctx.stroke();
+      const norm = points.slice(-60);
+      const maxV = Math.max(1, ...norm.map(p => Math.max(p.upserts, p.deletes)));
+      const xStep = norm.length > 1 ? pw / (norm.length - 1) : pw;
+      const toY = v => pad.top + ph - (v / maxV) * ph;
+      ctx.fillStyle = '#6a665f'; ctx.font = '12px Segoe UI';
+      ctx.fillText(String(maxV), 6, pad.top + 4);
+      ctx.fillText('0', 16, H - pad.bottom + 4);
+      function drawLine(color, key) {
+        ctx.strokeStyle = color; ctx.lineWidth = 2;
+        ctx.beginPath();
+        norm.forEach((p, i) => {
+          const x = pad.left + xStep * i, y = toY(p[key]);
+          i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      }
+      if (norm.length > 0) { drawLine('#1f7a5a', 'upserts'); drawLine('#b42318', 'deletes'); }
+    }
+
+    async function renderCollections() {
+      const body = document.getElementById('collections');
+      body.innerHTML = '';
+      const payload = await fetchJson('/api/collections');
+      payload.collections.forEach(col => {
+        const tr = document.createElement('tr');
+        const wrapper = document.createElement('div');
+        wrapper.style.cssText = 'display:flex;gap:8px;';
+
+        const reindexBtn = document.createElement('button');
+        reindexBtn.textContent = 'Reindex';
+        reindexBtn.onclick = async () => {
+          reindexBtn.disabled = true;
+          try {
+            await fetchJson('/api/reindex/' + encodeURIComponent(col.name), { method: 'POST' });
+            alert('Reindex started for ' + col.name);
+            await refreshAll();
+          } catch (e) { alert('Reindex failed: ' + e.message); }
+          finally { reindexBtn.disabled = false; }
+        };
+
+        const updateSchemaBtn = document.createElement('button');
+        updateSchemaBtn.textContent = 'Force Update Schema';
+        updateSchemaBtn.title = 'Cap nhat schema Typesense theo database moi nhat.';
+        updateSchemaBtn.onclick = async () => {
+          updateSchemaBtn.disabled = true;
+          updateSchemaBtn.textContent = 'Updating...';
+          try {
+            await fetchJson('/api/update-schema/' + encodeURIComponent(col.name), { method: 'POST' });
+            alert('Schema updated for ' + col.name);
+            await refreshAll();
+          } catch (e) { alert('Update schema failed: ' + e.message); }
+          finally { updateSchemaBtn.disabled = false; updateSchemaBtn.textContent = 'Force Update Schema'; }
+        };
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'danger'; delBtn.textContent = 'Delete';
+        delBtn.onclick = async () => {
+          if (!confirm('Delete collection ' + col.name + '?')) return;
+          await fetchJson('/api/collections/' + encodeURIComponent(col.name), { method: 'DELETE' });
+          await refreshAll();
+        };
+
+        wrapper.appendChild(reindexBtn);
+        wrapper.appendChild(updateSchemaBtn);
+        wrapper.appendChild(delBtn);
+        const actionTd = document.createElement('td');
+        actionTd.appendChild(wrapper);
+        tr.innerHTML = '<td>' + col.name + '</td><td>' + col.num_documents + '</td>';
+        tr.appendChild(actionTd);
+        body.appendChild(tr);
+      });
+    }
+
+    async function renderDiscoveredTables() {
+      const payload = await fetchJson('/api/discovered-tables');
+      document.getElementById('discoveryMode').textContent = payload.autoDiscoveryEnabled
+        ? 'Auto-discovery is enabled (database mode).'
+        : 'Auto-discovery is disabled (explicit tables config mode).';
+      const root = document.getElementById('discoveredTables');
+      root.innerHTML = '';
+      const startupSet = new Set(payload.startupDiscovered || []);
+      const runtimeSet = new Set(payload.runtimeDiscovered || []);
+      const current = payload.currentTables || [];
+      if (current.length === 0) { root.innerHTML = '<div class="muted-note">No tables are currently tracked.</div>'; return; }
+      current.forEach(name => {
+        const badge = document.createElement('span');
+        const isRuntime = runtimeSet.has(name);
+        badge.className = 'pill' + (isRuntime ? ' runtime' : '');
+        badge.textContent = name + ' (' + (isRuntime ? 'runtime' : startupSet.has(name) ? 'startup' : 'tracked') + ')';
+        root.appendChild(badge);
+      });
+    }
+
+    // ---------- error modal ----------
+    function syntaxHighlightJson(json) {
+      return json
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, m => {
+          if (/^"/.test(m)) return /:$/.test(m) ? '<span class="json-key">' + m + '</span>' : '<span class="json-str">' + m + '</span>';
+          if (/true|false/.test(m)) return '<span class="json-bool">' + m + '</span>';
+          if (/null/.test(m)) return '<span class="json-null">' + m + '</span>';
+          return '<span class="json-num">' + m + '</span>';
+        });
+    }
+
+    function parseContext(ctx) {
+      if (!ctx) return {};
+      const parts = ctx.split(':');
+      const op = parts[0];
+      const result = { op };
+      if (op === 'initial' || op === 'realtime') {
+        const tableKey = parts[1] || '';
+        const dotIdx = tableKey.indexOf('.');
+        result.database = dotIdx !== -1 ? tableKey.slice(0, dotIdx) : tableKey;
+        result.table    = dotIdx !== -1 ? tableKey.slice(dotIdx + 1) : '';
+        if (parts[2] === 'document') result.documentId = parts[3];
+      } else if (op === 'reindex' || op === 'update-schema') {
+        result.collection = parts.slice(1).join(':');
+      } else if (op === 'auto-discovery') {
+        result.key = parts.slice(1).join(':');
+      }
+      return result;
+    }
+
+    let currentError = null;
+
+    function openErrorModal(error) {
+      currentError = error;
+      const ctx = parseContext(error.context);
+
+      document.getElementById('modalAt').textContent = error.at;
+      document.getElementById('modalContext').textContent = error.context || '—';
+      document.getElementById('modalMessage').textContent = error.message;
+
+      // Context chips
+      const detail = document.getElementById('modalContextDetail');
+      detail.innerHTML = '';
+      const chipBase = 'display:inline-flex;align-items:center;border-radius:6px;padding:3px 9px;font-size:12px;font-weight:600;border:1px solid;';
+      function addChip(label, value, bg, color) {
+        const chip = document.createElement('span');
+        chip.style.cssText = chipBase + 'background:' + bg + ';color:' + color + ';border-color:' + color + '44;';
+        chip.innerHTML = (label ? '<span style="opacity:0.6;font-weight:400;margin-right:3px;">' + label + '</span>' : '') + value;
+        detail.appendChild(chip);
+      }
+      const opMap = {
+        initial: ['Initial Sync', '#e6f4f7', '#0b6b7a'],
+        realtime: ['Realtime', '#e7f5ef', '#1f7a5a'],
+        reindex: ['Reindex', '#fef9ec', '#9f7a1f'],
+        'update-schema': ['Update Schema', '#f4ecfe', '#7a3f9f'],
+        reset: ['Reset', '#fde8e8', '#b42318'],
+        'auto-discovery': ['Auto-Discovery', '#f2f5f7', '#5d6773']
+      };
+      const opInfo = opMap[ctx.op] || [ctx.op, '#f2f5f7', '#5d6773'];
+      if (ctx.op)       addChip('', opInfo[0], opInfo[1], opInfo[2]);
+      if (ctx.database) addChip('DB:', ctx.database, '#e8f0fe', '#0550ae');
+      if (ctx.table)    addChip('Table:', ctx.table, '#e8f5ec', '#116329');
+      if (ctx.documentId) addChip('Doc ID:', ctx.documentId, '#fff3e8', '#953800');
+      if (ctx.collection) addChip('Collection:', ctx.collection, '#e6f4f7', '#0b6b7a');
+
+      // Error analysis
+      const analysisField = document.getElementById('modalAnalysisField');
+      const analysis = document.getElementById('modalAnalysis');
+      const msg = error.message;
+      const rows = [];
+      let highlightField = null;
+
+      const refMatch = msg.match(new RegExp('Referenced field [\\x60\'?]?(\\w+)[\\x60\'?]? not found in the collection [\\x60\'?]?(\\w+)[\\x60\'?]?', 'i'));
+      if (refMatch) {
+        highlightField = refMatch[1];
+        rows.push('&#10060; Field <strong>' + refMatch[1] + '</strong> được dùng làm join reference target trong collection <strong>' + refMatch[2] + '</strong>, nhưng field này không tồn tại hoặc là optional trong collection đó.');
+        rows.push('&#128161; Fix: Reindex collection <strong>' + refMatch[2] + '</strong> trước, rồi mới reindex <strong>' + (ctx.table || 'table này') + '</strong>. Nếu vẫn lỗi, kiểm tra <code>join_configs</code> đúng field name và type chưa.');
+      }
+
+      const typeMatch = msg.match(new RegExp('Field [\\x60\'?]?(\\w+)[\\x60\'?]? must have ([\\w]+) value', 'i'));
+      if (typeMatch) {
+        highlightField = highlightField || typeMatch[1];
+        rows.push('&#10060; Field <strong>' + typeMatch[1] + '</strong> gửi sai kiểu dữ liệu — Typesense yêu cầu <strong>' + typeMatch[2] + '</strong>.');
+        rows.push('&#128161; Fix: Trong <code>join_configs</code> của table này, thêm <code>&quot;type&quot;: &quot;' + typeMatch[2] + '&quot;</code> cho field <strong>' + typeMatch[1] + '</strong>.');
+      }
+
+      const notFoundDoc = msg.match(new RegExp('Field [\\x60\'?]?(\\w+)[\\x60\'?]? not found in the document', 'i'));
+      if (notFoundDoc) {
+        highlightField = highlightField || notFoundDoc[1];
+        rows.push('&#9888; Field <strong>' + notFoundDoc[1] + '</strong> bắt buộc nhưng không có trong document (thường do binlog partial event khi MySQL binlog-row-image != FULL).');
+        rows.push('&#128161; Fix: Đánh dấu field <strong>' + notFoundDoc[1] + '</strong> là <code>&quot;optional&quot;: true</code> trong config.');
+      }
+
+      const importFailed = msg.match(/Typesense import failed for document (\S+): (.+)/i);
+      if (!refMatch && !typeMatch && !notFoundDoc && importFailed) {
+        rows.push('&#10060; Import thất bại cho document <strong>' + importFailed[1] + '</strong>.');
+        rows.push('&#128161; Kiểm tra Typesense schema của collection <strong>' + (ctx.table || '?') + '</strong> và đối chiếu với document data bên dưới.');
+      }
+
+      if (rows.length > 0) {
+        analysis.innerHTML = rows.map(r => '<div style="padding:2px 0;">' + r + '</div>').join('');
+        analysisField.style.display = '';
+      } else {
+        analysisField.style.display = 'none';
+      }
+
+      // Document data
+      const dataField = document.getElementById('modalDataField');
+      const dataEl = document.getElementById('modalData');
+      if (error.data) {
+        const formatted = JSON.stringify(error.data, null, 2);
+        let html = syntaxHighlightJson(formatted);
+        if (highlightField) {
+          html = html.replace(
+            new RegExp('(<span class="json-key">"' + highlightField + '"<\/span>)(: )(<span[^>]*>[^<]*<\/span>)', 'g'),
+            '<mark style="background:#fff3cd;border-radius:3px;outline:2px solid #e6a817;outline-offset:1px;">$1$2$3</mark>'
+          );
+        }
+        dataEl.innerHTML = html;
+        dataField.style.display = '';
+      } else {
+        dataField.style.display = 'none';
+      }
+
+      document.getElementById('errorModal').classList.add('open');
+    }
+
+    function closeErrorModal() {
+      document.getElementById('errorModal').classList.remove('open');
+    }
+
+    document.getElementById('modalCloseBtn').addEventListener('click', closeErrorModal);
+    document.getElementById('modalCloseBtnBottom').addEventListener('click', closeErrorModal);
+    document.getElementById('errorModal').addEventListener('click', e => {
+      if (e.target === document.getElementById('errorModal')) closeErrorModal();
+    });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeErrorModal(); });
+
+    document.getElementById('modalCopyReportBtn').addEventListener('click', async () => {
+      if (!currentError) return;
+      const ctx = parseContext(currentError.context);
+      const TICK = '\`\`\`';
+      const lines = ['## Bug Report — mysql2typesense', ''];
+      lines.push('**Time:** ' + currentError.at);
+      lines.push('**Context:** ' + (currentError.context || '—'));
+      if (ctx.op) lines.push('**Operation:** ' + ctx.op);
+      if (ctx.database && ctx.table) lines.push('**Table:** ' + ctx.database + '.' + ctx.table);
+      if (ctx.documentId) lines.push('**Document ID:** ' + ctx.documentId);
+      if (ctx.collection) lines.push('**Collection:** ' + ctx.collection);
+      lines.push('', '**Error:**', TICK, currentError.message, TICK);
+      if (currentError.data) {
+        lines.push('', '**Document Data:**', TICK + 'json', JSON.stringify(currentError.data, null, 2), TICK);
+      }
+      try {
+        await navigator.clipboard.writeText(lines.join('\n'));
+        const btn = document.getElementById('modalCopyReportBtn');
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy Full Report'; }, 2500);
+      } catch {}
+    });
+
+    document.getElementById('modalCopyBtn').addEventListener('click', async () => {
+      if (!currentError?.data) return;
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(currentError.data, null, 2));
+        const btn = document.getElementById('modalCopyBtn');
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy JSON'; }, 2000);
+      } catch {}
+    });
+
+    function renderErrors(errors) {
+      const body = document.getElementById('errors');
+      body.innerHTML = '';
+      if (errors.length === 0) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td colspan="3" class="muted" style="text-align:center;padding:16px;">No errors recorded.</td>';
+        body.appendChild(tr);
+        return;
+      }
+      errors.forEach(error => {
+        const tr = document.createElement('tr');
+        tr.className = 'clickable';
+        tr.title = 'Click to see error detail' + (error.data ? ' and document data' : '');
+        const time = document.createElement('td');
+        time.style.whiteSpace = 'nowrap';
+        time.textContent = error.at;
+        const ctxTd = document.createElement('td');
+        ctxTd.style.whiteSpace = 'nowrap';
+        ctxTd.textContent = error.context || '—';
+        const msg = document.createElement('td');
+        msg.style.color = 'var(--danger)';
+        msg.textContent = error.message.length > 120 ? error.message.slice(0, 120) + '…' : error.message;
+        if (error.data) {
+          const badge = document.createElement('span');
+          badge.style.cssText = 'margin-left:6px;font-size:10px;background:#e6f4f7;color:#0b6b7a;border:1px solid #0b6b7a;border-radius:4px;padding:1px 5px;vertical-align:middle;';
+          badge.textContent = 'data';
+          msg.appendChild(badge);
+        }
+        tr.appendChild(time); tr.appendChild(ctxTd); tr.appendChild(msg);
+        tr.addEventListener('click', () => openErrorModal(error));
+        body.appendChild(tr);
+      });
+    }
+
+    // ---------- main refresh ----------
+    async function refreshAll() {
+      if (refreshAll.running) return;
+      refreshAll.running = true;
+      try {
+        const status = await fetchJson('/api/status');
+        document.getElementById('statusLine').textContent =
+          'Mode: ' + status.mode + ' | Started: ' + status.startedAt + ' | Tables: ' + status.tables.length;
+
+        const modePill = document.getElementById('modePill');
+        modePill.className = 'mode-pill ' + status.mode;
+        modePill.textContent = String(status.mode || 'idle').toUpperCase();
+        document.getElementById('menuModeHint').textContent = 'Current mode: ' + status.mode;
+
+        const errorCount = Number(status?.counters?.errors || 0);
+        const badge = document.getElementById('menuErrorCount');
+        badge.textContent = String(errorCount);
+        badge.classList.toggle('alert', errorCount > 0);
+
+        renderMetrics(status.counters);
+        renderTableStats(status.perTable);
+        renderErrors(status.recentErrors);
+        drawThroughputChart(status.throughput || []);
+        const latest = (status.throughput || []).at(-1) || { upserts: 0, deletes: 0 };
+        document.getElementById('rateSummary').textContent =
+          'Current: ' + latest.upserts + ' upserts/s, ' + latest.deletes + ' deletes/s';
+        await renderDiscoveredTables();
+        await renderCollections();
+      } finally {
+        refreshAll.running = false;
+      }
+    }
+    refreshAll.running = false;
+
+    document.getElementById('refreshBtn').addEventListener('click', () => {
+      countdownRemaining = REFRESH_INTERVAL_S;
+      refreshAll();
+    });
+
+    document.getElementById('resetBtn').addEventListener('click', async () => {
+      if (!confirm('WARNING: This action will delete ALL Typesense data and reindex from scratch. Continue?')) return;
+      if (!confirm('Confirm again: All Typesense data will be deleted. Are you sure?')) return;
+      const btn = document.getElementById('resetBtn');
+      btn.disabled = true; btn.textContent = 'Resetting...';
+      try {
+        await fetchJson('/api/reset', { method: 'POST' });
+        alert('Reset has started. The system is reindexing data in the background.');
+        await refreshAll();
+      } catch (e) { alert('Reset failed: ' + e.message); }
+      finally { btn.disabled = false; btn.textContent = 'Reset Typesense'; }
+    });
+
+    refreshAll();
+    setInterval(() => {
+      countdownRemaining = REFRESH_INTERVAL_S;
+      refreshAll().catch(() => {});
+    }, REFRESH_INTERVAL_S * 1000);
+  </script>
+</body>
+</html>
