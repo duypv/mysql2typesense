@@ -173,12 +173,28 @@ describe("ConfigDrivenTransformer — json sourceFormat", () => {
     expect(await jsonField({ a: 1 })).toEqual({ a: 1 });
   });
 
-  it("returns raw string for non-JSON (e.g. '1,2,3')", async () => {
-    expect(await jsonField("1,2,3")).toBe("1,2,3");
+  it("splits non-JSON CSV string into number array", async () => {
+    expect(await jsonField("1,2,3")).toEqual([1, 2, 3]);
+  });
+
+  it("splits non-JSON CSV string with mixed types", async () => {
+    expect(await jsonField("a,b,c")).toEqual(["a", "b", "c"]);
   });
 
   it("returns undefined for empty string (null dropped by dropNulls)", async () => {
     expect(await jsonField("")).toBeUndefined();
+  });
+
+  it("wraps single numeric JSON value in array", async () => {
+    expect(await jsonField("1")).toEqual([1]);
+  });
+
+  it("wraps single boolean JSON value in array", async () => {
+    expect(await jsonField("true")).toEqual([true]);
+  });
+
+  it("wraps already-parsed primitive number in array", async () => {
+    expect(await jsonField(42)).toEqual([42]);
   });
 
   it("keeps homogeneous number array unchanged", async () => {
@@ -204,6 +220,29 @@ describe("ConfigDrivenTransformer — json sourceFormat", () => {
   it("recursively sanitizes nested object values", async () => {
     const result = await jsonField({ scores: [1, 2, 3] });
     expect(result).toEqual({ scores: [1, 2, 3] });
+  });
+
+  // -------------------------------------------------------------------------
+  // DepartmentIDs-style: MySQL stores JSON arrays or CSV in VARCHAR/TEXT
+  // -------------------------------------------------------------------------
+  it("parses JSON array string '[1,2,3,4]' to number array", async () => {
+    expect(await jsonField("[1,2,3,4]")).toEqual([1, 2, 3, 4]);
+  });
+
+  it("parses single-element JSON array '[1]' to array", async () => {
+    expect(await jsonField("[1]")).toEqual([1]);
+  });
+
+  it("parses CSV '1,17,12,14' to number array (legacy rows)", async () => {
+    expect(await jsonField("1,17,12,14")).toEqual([1, 17, 12, 14]);
+  });
+
+  it("parses single CSV value '1' to single-element array", async () => {
+    expect(await jsonField("1")).toEqual([1]);
+  });
+
+  it("parses CSV with spaces '1, 2, 3' to trimmed number array", async () => {
+    expect(await jsonField("1, 2, 3")).toEqual([1, 2, 3]);
   });
 });
 

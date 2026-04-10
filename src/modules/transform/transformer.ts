@@ -54,9 +54,9 @@ export class ConfigDrivenTransformer implements DocumentTransformer {
 
   private normalizeSourceValue(value: unknown, mapping: TransformFieldMapping): unknown {
     switch (mapping.sourceFormat ?? "plain") {
-      case "json":
+      case "json": {
         if (typeof value !== "string") {
-          return this.sanitizeJsonForTypesense(value);
+          return this.ensureJsonArray(this.sanitizeJsonForTypesense(value));
         }
 
         const trimmed = value.trim();
@@ -65,12 +65,21 @@ export class ConfigDrivenTransformer implements DocumentTransformer {
         }
 
         try {
-          return this.sanitizeJsonForTypesense(JSON.parse(trimmed));
+          return this.ensureJsonArray(this.sanitizeJsonForTypesense(JSON.parse(trimmed)));
         } catch {
-          // Some source columns matched by json_stringify may contain plain scalar/csv text
-          // in legacy rows. Keep raw text instead of failing the whole row.
-          return trimmed;
+          // JSON parse failed — commonly legacy CSV text like "1,2,3".
+          // Split by comma and coerce individual items.
+          const items = trimmed
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+
+          return items.map((s) => {
+            const n = Number(s);
+            return Number.isNaN(n) ? s : n;
+          });
         }
+      }
       case "csv":
         return Array.isArray(value)
           ? value
@@ -206,5 +215,12 @@ export class ConfigDrivenTransformer implements DocumentTransformer {
     if (value === null) return "null";
     if (Array.isArray(value)) return "array";
     return typeof value;
+  }
+
+  /** Wrap primitive scalars in an array so json-serialised columns produce consistent array types for Typesense. */
+  private ensureJsonArray(value: unknown): unknown {
+    if (value === null || value === undefined) return value;
+    if (Array.isArray(value) || typeof value === "object") return value;
+    return [value];
   }
 }
