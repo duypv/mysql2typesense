@@ -22,7 +22,8 @@ const RECONNECT_BASE_DELAY_MS = 5_000;
 const RECONNECT_MAX_DELAY_MS = 60_000;
 
 export class MySqlBinlogListener implements BinlogListener {
-  private zongji: ZongJi;
+  // Assigned in connectZongJi() before any access; '!' suppresses definite-assignment error.
+  private zongji!: ZongJi;
   private currentCheckpoint: BinlogCheckpoint | null = null;
   private started = false;
   private connected = false;
@@ -43,7 +44,6 @@ export class MySqlBinlogListener implements BinlogListener {
     for (const table of tables) {
       this.tableByKey.set(this.tableKey(table.database, table.table), table);
     }
-    this.zongji = this.createZongJi();
   }
 
   /** Whether ZongJi is currently connected and streaming. */
@@ -74,10 +74,12 @@ export class MySqlBinlogListener implements BinlogListener {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    try {
-      this.zongji.stop();
-    } catch {
-      // ignore stop errors
+    if (this.zongji) {
+      try {
+        this.zongji.stop();
+      } catch {
+        // ignore stop errors
+      }
     }
   }
 
