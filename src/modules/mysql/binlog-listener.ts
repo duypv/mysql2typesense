@@ -18,10 +18,17 @@ type RawBinlogEvent = {
   binlogName?: string;
 };
 
+const RECONNECT_BASE_DELAY_MS = 5_000;
+const RECONNECT_MAX_DELAY_MS = 60_000;
+
 export class MySqlBinlogListener implements BinlogListener {
-  private readonly zongji: ZongJi;
+  private zongji: ZongJi;
   private currentCheckpoint: BinlogCheckpoint | null = null;
   private started = false;
+  private connected = false;
+  private reconnectAttempt = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private savedOnChange: ((event: ChangeEvent) => Promise<void>) | null = null;
   private readonly tableByKey = new Map<string, TableSyncConfig>();
 
   private logger: any = null;
@@ -36,13 +43,12 @@ export class MySqlBinlogListener implements BinlogListener {
     for (const table of tables) {
       this.tableByKey.set(this.tableKey(table.database, table.table), table);
     }
-    this.zongji = new ZongJi({
-      host: config.mysql.host,
-      port: config.mysql.port,
-      user: config.mysql.user,
-      password: config.mysql.password,
-      database: config.mysql.database
-    });
+    this.zongji = this.createZongJi();
+  }
+
+  /** Whether ZongJi is currently connected and streaming. */
+  isConnected(): boolean {
+    return this.connected;
   }
 
   registerTable(table: TableSyncConfig): void {
@@ -54,33 +60,73 @@ export class MySqlBinlogListener implements BinlogListener {
   }
 
   async start(onChange: (event: ChangeEvent) => Promise<void>): Promise<void> {
+    this.savedOnChange = onChange;
+    this.started = true;
     this.currentCheckpoint = await this.checkpointStore.load();
-    // In auto-database mode, always include the configured database name so ZongJi subscribes
-    // even before tables are dynamically discovered and registered via registerTable().
-    const includeSchema = this.config.sync.database && this.config.sync.tables.length === 0
-      ? (() => {
-          const dbs = new Set<string>();
-          const cfgDb = (this.config.sync.database as { name?: string } | undefined)?.name;
-          if (cfgDb) dbs.add(cfgDb);
-          for (const table of this.tableByKey.values()) dbs.add(table.database);
-          return Array.from(dbs).reduce<Record<string, true | string[]>>((acc, db) => {
-            acc[db] = true;
-            return acc;
-          }, {});
-        })()
-      : Array.from(this.tableByKey.values()).reduce<Record<string, true | string[]>>((accumulator, table) => {
-          const current = accumulator[table.database];
-          if (Array.isArray(current)) {
-            current.push(table.table);
-          } else if (current !== true) {
-            accumulator[table.database] = [table.table];
-          }
-          return accumulator;
-        }, {});
+
+    await this.connectZongJi(onChange);
+  }
+
+  async stop(): Promise<void> {
+    this.started = false;
+    this.connected = false;
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    try {
+      this.zongji.stop();
+    } catch {
+      // ignore stop errors
+    }
+  }
+
+  private createZongJi(): ZongJi {
+    return new ZongJi({
+      host: this.config.mysql.host,
+      port: this.config.mysql.port,
+      user: this.config.mysql.user,
+      password: this.config.mysql.password,
+      database: this.config.mysql.database
+    });
+  }
+
+  private buildIncludeSchema(): Record<string, true | string[]> {
+    if (this.config.sync.database && this.config.sync.tables.length === 0) {
+      const dbs = new Set<string>();
+      const cfgDb = (this.config.sync.database as { name?: string } | undefined)?.name;
+      if (cfgDb) dbs.add(cfgDb);
+      for (const table of this.tableByKey.values()) dbs.add(table.database);
+      return Array.from(dbs).reduce<Record<string, true | string[]>>((acc, db) => {
+        acc[db] = true;
+        return acc;
+      }, {});
+    }
+    return Array.from(this.tableByKey.values()).reduce<Record<string, true | string[]>>((accumulator, table) => {
+      const current = accumulator[table.database];
+      if (Array.isArray(current)) {
+        current.push(table.table);
+      } else if (current !== true) {
+        accumulator[table.database] = [table.table];
+      }
+      return accumulator;
+    }, {});
+  }
+
+  /**
+   * Creates a fresh ZongJi instance and connects it to the binlog stream.
+   * Resolves when ZongJi emits "ready". After ready, a persistent error handler
+   * is installed that auto-reconnects on connection loss.
+   */
+  private async connectZongJi(onChange: (event: ChangeEvent) => Promise<void>): Promise<void> {
+    // Always create a fresh ZongJi — a stopped or errored instance cannot be restarted
+    this.zongji = this.createZongJi();
+
+    const includeSchema = this.buildIncludeSchema();
 
     this.logger?.info(
       { checkpoint: this.currentCheckpoint, includeSchema },
-      "Binlog listener starting"
+      "Binlog listener connecting"
     );
 
     if (Object.keys(includeSchema).length === 0) {
@@ -91,21 +137,33 @@ export class MySqlBinlogListener implements BinlogListener {
     }
 
     await new Promise<void>((resolve, reject) => {
+      let readyFired = false;
+
       const handleError = (error: unknown) => {
-        this.logger?.error({ error }, "Binlog listener error");
-        reject(error);
+        if (!readyFired) {
+          this.logger?.error({ error }, "Binlog listener error during startup");
+          reject(error);
+        } else {
+          this.logger?.error({ error }, "Binlog listener connection lost — scheduling reconnect");
+          this.connected = false;
+          this.scheduleReconnect(onChange);
+        }
       };
+
       const handleReady = () => {
+        readyFired = true;
+        this.connected = true;
+        this.reconnectAttempt = 0;
         this.logger?.info("Binlog listener ready, listening for changes");
         resolve();
       };
+
       const handleEvent = async (event: RawBinlogEvent) => {
         try {
           this.logger?.debug({ eventName: event.getEventName?.() }, "Binlog event received");
           await this.handleEvent(event, onChange);
         } catch (error) {
           this.logger?.error({ error }, "Error handling binlog event");
-          reject(error);
         }
       };
 
@@ -123,16 +181,42 @@ export class MySqlBinlogListener implements BinlogListener {
         startOptions.position = this.currentCheckpoint.position;
       }
 
-      this.started = true;
       this.zongji.start(startOptions);
     });
   }
 
-  async stop(): Promise<void> {
-    if (this.started) {
-      this.zongji.stop();
-      this.started = false;
+  /**
+   * Schedules a reconnect attempt with exponential backoff.
+   * Creates a brand-new ZongJi instance because ZongJi cannot be restarted after stop/error.
+   */
+  private scheduleReconnect(onChange: (event: ChangeEvent) => Promise<void>): void {
+    if (!this.started || this.reconnectTimer !== null) {
+      return;
     }
+
+    const delay = Math.min(
+      RECONNECT_BASE_DELAY_MS * Math.pow(2, this.reconnectAttempt),
+      RECONNECT_MAX_DELAY_MS
+    );
+    this.reconnectAttempt += 1;
+    this.logger?.info({ delay, attempt: this.reconnectAttempt }, "Scheduling ZongJi reconnect");
+
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
+      try {
+        // Destroy the old instance (it is already dead, but clean up anyway)
+        try { this.zongji.stop(); } catch { /* ignore */ }
+
+        // Reload the latest saved checkpoint so we don't replay already-processed events
+        this.currentCheckpoint = await this.checkpointStore.load();
+
+        await this.connectZongJi(onChange);
+        this.logger?.info("ZongJi reconnected successfully");
+      } catch (error) {
+        this.logger?.error({ error, attempt: this.reconnectAttempt }, "ZongJi reconnect attempt failed");
+        this.scheduleReconnect(onChange);
+      }
+    }, delay);
   }
 
   private async handleEvent(

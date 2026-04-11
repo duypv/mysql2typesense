@@ -26,6 +26,10 @@ export interface MonitoringServerOptions {
     runtimeDiscovered: string[];
     currentTables: string[];
   };
+  getCheckpoint: () => Promise<unknown>;
+  alignCheckpoint: () => Promise<{ ok: boolean; reason?: string }>;
+  getBinlogConnected: () => boolean;
+  restartRealtime: () => Promise<{ ok: boolean; reason?: string }>;
 }
 
 function sendJson(response: ServerResponse, statusCode: number, payload: unknown) {
@@ -84,7 +88,10 @@ function isAdminRoute(pathname: string): boolean {
     pathname === "/api/reset" ||
     pathname === "/api/reset-status" ||
     pathname === "/api/join-integrity" ||
-    pathname === "/api/discovered-tables"
+    pathname === "/api/discovered-tables" ||
+    pathname === "/api/checkpoint" ||
+    pathname === "/api/checkpoint/align" ||
+    pathname === "/api/restart-realtime"
   );
 }
 
@@ -230,7 +237,11 @@ export function startMonitoringServer(options: MonitoringServerOptions): Server 
     resetTypesense,
     getJoinReferenceDiagnostics,
     getResetStatus,
-    getDiscoveredTables
+    getDiscoveredTables,
+    getCheckpoint,
+    alignCheckpoint,
+    getBinlogConnected,
+    restartRealtime
   } = options;
 
   const server = createServer(async (request, response) => {
@@ -258,12 +269,30 @@ export function startMonitoringServer(options: MonitoringServerOptions): Server 
       }
 
       if (request.method === "GET" && url.pathname === "/api/status") {
-        sendJson(response, 200, monitor.snapshot());
+        sendJson(response, 200, { ...monitor.snapshot(), binlogConnected: getBinlogConnected() });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/restart-realtime") {
+        const result = await restartRealtime();
+        sendJson(response, result.ok ? 200 : 500, result);
         return;
       }
 
       if (request.method === "GET" && url.pathname === "/api/discovered-tables") {
         sendJson(response, 200, getDiscoveredTables());
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/checkpoint") {
+        const checkpoint = await getCheckpoint();
+        sendJson(response, 200, { checkpoint });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/checkpoint/align") {
+        const result = await alignCheckpoint();
+        sendJson(response, result.ok ? 200 : 500, result);
         return;
       }
 

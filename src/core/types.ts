@@ -257,4 +257,5 @@ export interface BinlogListener {
   start(onChange: (event: ChangeEvent) => Promise<void>): Promise<void>;
   stop(): Promise<void>;
   registerTable?(table: TableSyncConfig): void;
+  isConnected?(): boolean;
 }

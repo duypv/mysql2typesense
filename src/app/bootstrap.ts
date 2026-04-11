@@ -603,6 +603,29 @@ export async function bootstrap(): Promise<AppContext> {
         return collectionManager.getJoinReferenceIntegrityReport(resolvedTables);
       },
       getResetStatus: () => ({ ...resetStatus }),
+      getCheckpoint: async () => checkpointStore.load(),
+      alignCheckpoint: async () => {
+        try {
+          await alignCheckpointToCurrentBinlog("manual-api");
+          const saved = await checkpointStore.load();
+          return { ok: true, checkpoint: saved };
+        } catch (error) {
+          return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+        }
+      },
+      getBinlogConnected: () => binlogListener.isConnected(),
+      restartRealtime: async () => {
+        try {
+          await binlogListener.stop();
+          await alignCheckpointToCurrentBinlog("restart-realtime-api");
+          realtimeSyncService.run().catch((error) => {
+            logger.error({ error }, "Realtime sync service error after manual restart");
+          });
+          return { ok: true };
+        } catch (error) {
+          return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+        }
+      },
       getDiscoveredTables: () => ({
         autoDiscoveryEnabled: autoDatabaseMode,
         startupDiscovered: Array.from(startupDiscoveredTables).sort(),
