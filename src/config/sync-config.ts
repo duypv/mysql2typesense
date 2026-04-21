@@ -129,7 +129,7 @@ const tableSchema = z.object({
 const syncConfigSchema = z.object({
   database: z
     .object({
-      name: z.string().min(1),
+      name: z.string().min(1).optional(),
       excludeFields: z.array(z.string().min(1)).optional(),
       infix_string: z.boolean().optional(),
       json_stringify: z.array(z.string().min(1)).optional(),

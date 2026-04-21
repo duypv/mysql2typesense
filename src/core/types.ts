@@ -85,7 +85,7 @@ export interface TableSyncConfig {
 }
 
 export interface DatabaseSyncConfig {
-  name: string;
+  name?: string;
   excludeFields?: string[];
   infixString?: boolean;
   jsonStringify?: string[];

@@ -1,6 +1,5 @@
 {
   "database": {
-    "name": "app",
     "excludeFields": ["password", "secret_token"],
     "infix_string": true,
     "json_stringify": ["*IDs"],
