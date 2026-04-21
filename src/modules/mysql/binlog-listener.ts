@@ -142,11 +142,31 @@ export class MySqlBinlogListener implements BinlogListener {
       let readyFired = false;
 
       const handleError = (error: unknown) => {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        const isDroppedTableError = errorMessage.includes("Insufficient permissions to access")
+          || errorMessage.includes("table has been dropped");
+
         if (!readyFired) {
-          this.logger?.error({ error }, "Binlog listener error during startup");
-          reject(error);
+          if (isDroppedTableError) {
+            this.logger?.warn(
+              { error: errorMessage },
+              "Binlog references a dropped table during startup — will advance checkpoint to current position and retry"
+            );
+            this.advanceCheckpointAndReconnect(onChange);
+            resolve();
+          } else {
+            this.logger?.error({ error: errorMessage }, "Binlog listener error during startup");
+            reject(error);
+          }
+        } else if (isDroppedTableError) {
+          this.logger?.warn(
+            { error: errorMessage },
+            "Binlog references a dropped table — advancing checkpoint to current position"
+          );
+          this.connected = false;
+          this.advanceCheckpointAndReconnect(onChange);
         } else {
-          this.logger?.error({ error }, "Binlog listener connection lost — scheduling reconnect");
+          this.logger?.error({ error: errorMessage }, "Binlog listener connection lost — scheduling reconnect");
           this.connected = false;
           this.scheduleReconnect(onChange);
         }
@@ -185,6 +205,63 @@ export class MySqlBinlogListener implements BinlogListener {
 
       this.zongji.start(startOptions);
     });
+  }
+
+  /**
+   * Advances the checkpoint to the current MySQL binlog position and reconnects.
+   * Used when the binlog stream references a dropped table that would cause an infinite reconnect loop.
+   */
+  private advanceCheckpointAndReconnect(onChange: (event: ChangeEvent) => Promise<void>): void {
+    try { this.zongji.stop(); } catch { /* ignore */ }
+
+    const delay = RECONNECT_BASE_DELAY_MS;
+    this.logger?.info({ delay }, "Will advance checkpoint to current binlog position and reconnect");
+
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
+      try {
+        const mysql2 = await import("mysql2/promise");
+        const conn = await mysql2.createConnection({
+          host: this.config.mysql.host,
+          port: this.config.mysql.port,
+          user: this.config.mysql.user,
+          password: this.config.mysql.password
+        });
+
+        let rows: any[];
+        try {
+          const [result] = await conn.query("SHOW BINARY LOG STATUS");
+          rows = result as any[];
+        } catch {
+          const [result] = await conn.query("SHOW MASTER STATUS");
+          rows = result as any[];
+        }
+        await conn.end();
+
+        const first = (rows as any[])[0];
+        if (first?.File && first?.Position !== undefined) {
+          const checkpoint: BinlogCheckpoint = {
+            filename: String(first.File),
+            position: Number(first.Position),
+            updatedAt: new Date().toISOString()
+          };
+          await this.checkpointStore.save(checkpoint);
+          this.currentCheckpoint = checkpoint;
+          this.logger?.info(
+            { filename: checkpoint.filename, position: checkpoint.position },
+            "Advanced checkpoint to current binlog position, skipping dropped-table events"
+          );
+        }
+
+        await this.connectZongJi(onChange);
+        this.reconnectAttempt = 0;
+        this.logger?.info("Reconnected successfully after advancing checkpoint");
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        this.logger?.error({ error: msg }, "Failed to advance checkpoint — falling back to normal reconnect");
+        this.scheduleReconnect(onChange);
+      }
+    }, delay);
   }
 
   /**
