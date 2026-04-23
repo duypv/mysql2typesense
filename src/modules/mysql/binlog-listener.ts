@@ -20,6 +20,9 @@ type RawBinlogEvent = {
 
 const RECONNECT_BASE_DELAY_MS = 5_000;
 const RECONNECT_MAX_DELAY_MS = 60_000;
+const CONNECT_TIMEOUT_MS = 30_000;
+const WATCHDOG_INTERVAL_MS = 120_000;
+const WATCHDOG_MAX_SILENT_MS = 300_000;
 
 export class MySqlBinlogListener implements BinlogListener {
   // Assigned in connectZongJi() before any access; '!' suppresses definite-assignment error.
@@ -29,6 +32,8 @@ export class MySqlBinlogListener implements BinlogListener {
   private connected = false;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  private lastEventAt: number = Date.now();
   private savedOnChange: ((event: ChangeEvent) => Promise<void>) | null = null;
   private readonly tableByKey = new Map<string, TableSyncConfig>();
 
@@ -62,14 +67,86 @@ export class MySqlBinlogListener implements BinlogListener {
   async start(onChange: (event: ChangeEvent) => Promise<void>): Promise<void> {
     this.savedOnChange = onChange;
     this.started = true;
+    this.lastEventAt = Date.now();
     this.currentCheckpoint = await this.checkpointStore.load();
 
     await this.connectZongJi(onChange);
+    this.startWatchdog(onChange);
+  }
+
+  /**
+   * Periodically checks if the binlog listener is still alive.
+   * If connected but no events received for WATCHDOG_MAX_SILENT_MS,
+   * forces a reconnect to recover from silent connection death.
+   */
+  private startWatchdog(onChange: (event: ChangeEvent) => Promise<void>): void {
+    if (this.watchdogTimer !== null) return;
+
+    this.watchdogTimer = setInterval(async () => {
+      if (!this.started) return;
+
+      if (!this.connected && this.reconnectTimer === null) {
+        this.logger?.warn("Watchdog: binlog disconnected with no reconnect scheduled — forcing reconnect");
+        this.scheduleReconnect(onChange);
+        return;
+      }
+
+      if (this.connected) {
+        const silentMs = Date.now() - this.lastEventAt;
+        if (silentMs > WATCHDOG_MAX_SILENT_MS) {
+          this.logger?.warn(
+            { silentMs, threshold: WATCHDOG_MAX_SILENT_MS },
+            "Watchdog: no binlog events for too long — checking connection health"
+          );
+          try {
+            const mysql2 = await import("mysql2/promise");
+            const conn = await mysql2.createConnection({
+              host: this.config.mysql.host,
+              port: this.config.mysql.port,
+              user: this.config.mysql.user,
+              password: this.config.mysql.password,
+              connectTimeout: 10_000
+            });
+
+            let rows: any[];
+            try {
+              const [result] = await conn.query("SHOW BINARY LOG STATUS");
+              rows = result as any[];
+            } catch {
+              const [result] = await conn.query("SHOW MASTER STATUS");
+              rows = result as any[];
+            }
+            await conn.end();
+
+            const current = (rows as any[])[0];
+            const cp = this.currentCheckpoint;
+            if (current && cp && (current.File !== cp.filename || Number(current.Position) !== cp.position)) {
+              this.logger?.warn(
+                { checkpoint: cp, mysqlCurrent: { file: current.File, position: current.Position } },
+                "Watchdog: MySQL has advanced beyond checkpoint — connection may be dead, forcing reconnect"
+              );
+              this.connected = false;
+              try { this.zongji.stop(); } catch { /* ignore */ }
+              this.scheduleReconnect(onChange);
+            } else {
+              this.lastEventAt = Date.now();
+              this.logger?.info("Watchdog: MySQL position matches checkpoint — connection healthy, no new data");
+            }
+          } catch (error) {
+            this.logger?.error({ error }, "Watchdog: failed to check MySQL status");
+          }
+        }
+      }
+    }, WATCHDOG_INTERVAL_MS);
   }
 
   async stop(): Promise<void> {
     this.started = false;
     this.connected = false;
+    if (this.watchdogTimer !== null) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -140,6 +217,19 @@ export class MySqlBinlogListener implements BinlogListener {
 
     await new Promise<void>((resolve, reject) => {
       let readyFired = false;
+      let settled = false;
+
+      const connectTimeout = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          this.logger?.error(
+            { timeoutMs: CONNECT_TIMEOUT_MS },
+            "ZongJi connect timed out — no ready/error event received"
+          );
+          try { this.zongji.stop(); } catch { /* ignore */ }
+          reject(new Error("ZongJi connect timed out after " + CONNECT_TIMEOUT_MS + "ms"));
+        }
+      }, CONNECT_TIMEOUT_MS);
 
       const handleError = (error: unknown) => {
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -147,6 +237,8 @@ export class MySqlBinlogListener implements BinlogListener {
           || errorMessage.includes("table has been dropped");
 
         if (!readyFired) {
+          clearTimeout(connectTimeout);
+          settled = true;
           if (isDroppedTableError) {
             this.logger?.warn(
               { error: errorMessage },
@@ -173,15 +265,19 @@ export class MySqlBinlogListener implements BinlogListener {
       };
 
       const handleReady = () => {
+        clearTimeout(connectTimeout);
+        settled = true;
         readyFired = true;
         this.connected = true;
         this.reconnectAttempt = 0;
+        this.lastEventAt = Date.now();
         this.logger?.info("Binlog listener ready, listening for changes");
         resolve();
       };
 
       const handleEvent = async (event: RawBinlogEvent) => {
         try {
+          this.lastEventAt = Date.now();
           this.logger?.debug({ eventName: event.getEventName?.() }, "Binlog event received");
           await this.handleEvent(event, onChange);
         } catch (error) {
