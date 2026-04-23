@@ -76,6 +76,33 @@
     .mode-pill.idle   { background: #1e2b39; border-color: #37516c; }
     .mode-pill.initial  { background: #4d3c12; border-color: #9f7a1f; color: #ffedbf; }
     .mode-pill.realtime { background: #0f3f2a; border-color: #1f7a5a; color: #b7f2da; }
+    .conn-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 3px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      margin-top: 8px;
+      border: 1px solid;
+    }
+    .conn-status .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+    }
+    .conn-status.connected {
+      background: #0f3f2a; border-color: #1f7a5a; color: #b7f2da;
+    }
+    .conn-status.connected .dot { background: #34d399; box-shadow: 0 0 6px #34d399; }
+    .conn-status.disconnected {
+      background: #3b1a17; border-color: #b42318; color: #fca5a5;
+      animation: pulse-disconnect 2s ease-in-out infinite;
+    }
+    .conn-status.disconnected .dot { background: #f04438; box-shadow: 0 0 6px #f04438; }
+    @keyframes pulse-disconnect {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
+    }
     .countdown-ring {
       display: flex;
       align-items: center;
@@ -368,6 +395,10 @@
       <div class="brand">Sync Dashboard</div>
       <div class="sidebar-state">
         <div id="modePill" class="mode-pill idle">IDLE</div>
+        <div id="binlogStatus" class="conn-status disconnected">
+          <span class="dot"></span>
+          <span id="binlogStatusLabel">Binlog: checking...</span>
+        </div>
         <div id="menuModeHint">Current mode: idle</div>
         <div class="countdown-ring" id="countdownWrap">
           <svg width="22" height="22" viewBox="0 0 22 22">
@@ -1191,8 +1222,15 @@
       refreshAll.running = true;
       try {
         const status = await fetchJson('/api/status');
+        const binlogOk = !!status.binlogConnected;
+        const binlogEl = document.getElementById('binlogStatus');
+        const binlogLabel = document.getElementById('binlogStatusLabel');
+        binlogEl.className = 'conn-status ' + (binlogOk ? 'connected' : 'disconnected');
+        binlogLabel.textContent = binlogOk ? 'Binlog: connected' : 'Binlog: DISCONNECTED';
+
+        const connText = binlogOk ? 'Connected' : 'DISCONNECTED';
         document.getElementById('statusLine').textContent =
-          'Mode: ' + status.mode + ' | Started: ' + status.startedAt + ' | Tables: ' + status.tables.length;
+          'Mode: ' + status.mode + ' | Binlog: ' + connText + ' | Started: ' + status.startedAt + ' | Tables: ' + status.tables.length;
 
         const modePill = document.getElementById('modePill');
         modePill.className = 'mode-pill ' + status.mode;
