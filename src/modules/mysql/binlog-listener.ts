@@ -235,14 +235,18 @@ export class MySqlBinlogListener implements BinlogListener {
         const errorMessage = error instanceof Error ? error.message : String(error);
         const isDroppedTableError = errorMessage.includes("Insufficient permissions to access")
           || errorMessage.includes("table has been dropped");
+        const isStaleBinlogError = errorMessage.includes("ER_MASTER_FATAL_ERROR_READING_BINLOG")
+          || errorMessage.includes("bogus data in log event");
 
         if (!readyFired) {
           clearTimeout(connectTimeout);
           settled = true;
-          if (isDroppedTableError) {
+          if (isDroppedTableError || isStaleBinlogError) {
             this.logger?.warn(
               { error: errorMessage },
-              "Binlog references a dropped table during startup — will advance checkpoint to current position and retry"
+              isDroppedTableError
+                ? "Binlog references a dropped table during startup — will advance checkpoint to current position and retry"
+                : "Binlog file no longer exists or is corrupted during startup — will advance checkpoint to current position and retry"
             );
             this.advanceCheckpointAndReconnect(onChange);
             resolve();
@@ -250,10 +254,12 @@ export class MySqlBinlogListener implements BinlogListener {
             this.logger?.error({ error: errorMessage }, "Binlog listener error during startup");
             reject(error);
           }
-        } else if (isDroppedTableError) {
+        } else if (isDroppedTableError || isStaleBinlogError) {
           this.logger?.warn(
             { error: errorMessage },
-            "Binlog references a dropped table — advancing checkpoint to current position"
+            isDroppedTableError
+              ? "Binlog references a dropped table — advancing checkpoint to current position"
+              : "Binlog file no longer exists or is corrupted — advancing checkpoint to current position"
           );
           this.connected = false;
           this.advanceCheckpointAndReconnect(onChange);

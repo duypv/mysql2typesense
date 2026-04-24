@@ -33,6 +33,13 @@ export class InitialSyncService {
       await withRetry(() => this.collectionManager.ensureCollection(table, /* forceRecreate */ true), this.retryConfig);
     }
 
+    // Phase 1b: scan ACTUAL Typesense schemas for reference fields and ensure all
+    // target fields are non-optional. This catches references created by any code
+    // path (including previous deployments) that the in-memory config may not know about.
+    // Typesense v30 rejects imports with "Referenced field X not found in collection Y"
+    // when the target field is optional — this auto-repair prevents that error.
+    await withRetry(() => this.collectionManager.repairReferenceTargets(), this.retryConfig);
+
     await withRetry(() => this.collectionManager.validateJoinReferenceIntegrity(tables), this.retryConfig);
 
     // Phase 2: import data for all tables now that all schemas are in place.

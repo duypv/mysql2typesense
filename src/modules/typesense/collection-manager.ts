@@ -251,6 +251,107 @@ export class TypesenseCollectionManager {
   }
 
   /**
+   * Scans ALL Typesense collections for reference fields, then ensures every
+   * referenced target field is non-optional (required). Typesense v30 rejects
+   * document imports when a reference points to an optional target field with
+   * "Referenced field X not found in collection Y".
+   *
+   * This method reads the ACTUAL Typesense schemas (not in-memory configs),
+   * so it catches references created by any code path — including previous
+   * deployments or auto-FK detection that may no longer be in the codebase.
+   *
+   * If a target field needs fixing, the target collection is dropped and
+   * recreated with the corrected schema (Typesense does not support changing
+   * optional→required via PATCH).
+   */
+  async repairReferenceTargets(): Promise<number> {
+    const allCollections = await this.client.collections().retrieve();
+    const schemaByName = new Map(
+      allCollections.map((col) => [col.name, col])
+    );
+
+    // Collect all reference targets: { targetCollection, targetField, sourceType }
+    const targets = new Map<string, { collection: string; field: string; type: string }>();
+    for (const col of allCollections) {
+      for (const field of col.fields ?? []) {
+        if (!field.reference || typeof field.reference !== "string") continue;
+        const dotIdx = field.reference.indexOf(".");
+        if (dotIdx === -1) continue;
+        const targetCollection = field.reference.slice(0, dotIdx);
+        const targetField = field.reference.slice(dotIdx + 1);
+        const key = `${targetCollection}.${targetField}`;
+        if (!targets.has(key)) {
+          targets.set(key, { collection: targetCollection, field: targetField, type: field.type ?? "string" });
+        }
+      }
+    }
+
+    if (targets.size === 0) return 0;
+
+    let repaired = 0;
+    // Group by target collection to avoid multiple drop+recreate for the same collection
+    const fixesByCollection = new Map<string, string[]>();
+    for (const [, target] of targets) {
+      const schema = schemaByName.get(target.collection);
+      if (!schema) continue;
+      const targetFieldSchema = (schema.fields ?? []).find((f) => f.name === target.field);
+      if (!targetFieldSchema) {
+        // Target field missing — will be caught by validateJoinReferenceIntegrity
+        continue;
+      }
+      if (targetFieldSchema.optional === true) {
+        const existing = fixesByCollection.get(target.collection) ?? [];
+        existing.push(target.field);
+        fixesByCollection.set(target.collection, existing);
+      }
+    }
+
+    for (const [collectionName, fieldsToFix] of fixesByCollection) {
+      const schema = schemaByName.get(collectionName);
+      if (!schema) continue;
+
+      const correctedFields = (schema.fields ?? [])
+        .filter((f) => f.name !== undefined)
+        .map((f) => {
+          const corrected: Record<string, unknown> = { ...f };
+          if (fieldsToFix.includes(f.name!)) {
+            delete corrected.optional;
+          }
+          return corrected;
+        });
+
+      this.logger?.info(
+        { collection: collectionName, fieldsFixed: fieldsToFix },
+        "repairReferenceTargets: drop+recreate to fix optional reference target fields"
+      );
+
+      try {
+        await this.client.collections(collectionName).delete();
+        await this.client.collections().create({
+          name: collectionName,
+          fields: correctedFields as any,
+          default_sorting_field: (schema as any).default_sorting_field,
+          enable_nested_fields: (schema as any).enable_nested_fields,
+          token_separators: (schema as any).token_separators,
+          symbols_to_index: (schema as any).symbols_to_index
+        });
+        this.synced.delete(collectionName);
+        repaired += fieldsToFix.length;
+      } catch (error) {
+        this.logger?.error(
+          { collection: collectionName, error },
+          "repairReferenceTargets: failed to recreate collection"
+        );
+      }
+    }
+
+    if (repaired > 0) {
+      this.logger?.info({ repairedFields: repaired }, "repairReferenceTargets: completed");
+    }
+    return repaired;
+  }
+
+  /**
    * Clears the internal cache of synced collections.
    * Call this after deleting collections (e.g. during a full reset) so that
    * the next `ensureCollection` call treats each collection as new.
