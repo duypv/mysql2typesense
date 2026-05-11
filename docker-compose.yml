@@ -40,6 +40,10 @@ services:
       - "8108:8108"
     volumes:
       - ./typesense-data:/data
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
 
   sync-app:
     platform: linux/amd64
