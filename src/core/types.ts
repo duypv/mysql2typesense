@@ -189,6 +189,8 @@ export interface AppConfig {
     tables: TableSyncConfigSeed[];
     retry: RetryConfig;
     joinConfigs: TableJoinConfig[];
+    /** Periodic reconcile interval in realtime mode (ms). 0 disables. */
+    reconcileIntervalMs: number;
   };
   typesense: {
     host: string;

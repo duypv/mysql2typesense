@@ -36,6 +36,10 @@ services:
       - --data-dir=/data
       - --api-key=xyz
       - --enable-cors
+      # Auto-recover a single-node raft that lands in ERROR state (e.g. after the
+      # container IP changes or an unclean shutdown) instead of staying stuck
+      # returning "503 Not Ready or Lagging" forever.
+      - --reset-peers-on-error=true
     ports:
       - "8108:8108"
     volumes:
@@ -44,6 +48,24 @@ services:
       nofile:
         soft: 65536
         hard: 65536
+    # Give Typesense time to flush a raft snapshot on shutdown. A short grace
+    # period (default 10s) can kill it mid-snapshot and corrupt the WAL, which is
+    # what leaves the node permanently "Not Ready or Lagging" on next start.
+    stop_grace_period: 60s
+    # /health returns {"ok":true} only when the node is ready AND the raft node is
+    # leader/caught-up; it returns 503 {"ok":false} while "Not Ready or Lagging".
+    # Use bash /dev/tcp (the image is Ubuntu-based, /bin/sh is dash without /dev/tcp)
+    # so we don't depend on curl/wget being present in the image.
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/8108 && printf ''GET /health HTTP/1.0\r\n\r\n'' >&3 && grep -q ''"ok":true'' <&3'
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
 
   sync-app:
     platform: linux/amd64
@@ -55,7 +77,7 @@ services:
       redis:
         condition: service_healthy
       typesense:
-        condition: service_started
+        condition: service_healthy
     environment:
       DB_HOST: mysql
       DB_PORT: 3306

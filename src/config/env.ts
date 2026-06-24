@@ -30,6 +30,10 @@ const envSchema = z.object({
   MONITORING_AUTH_TOKEN: z.string().optional(),
   RETRY_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
   RETRY_BASE_DELAY_MS: z.coerce.number().int().positive().default(500),
+  // Periodic reconcile in realtime mode: how often to compare MySQL primary keys
+  // vs Typesense document IDs and delete documents missing from MySQL.
+  // Set to 0 to disable. Default: 15 minutes.
+  RECONCILE_INTERVAL_MS: z.coerce.number().int().nonnegative().default(900000),
   LOG_LEVEL: z.string().default("info")
 });
 
@@ -53,7 +57,8 @@ export function loadConfig(): AppConfig {
       retry: {
         maxAttempts: env.RETRY_MAX_ATTEMPTS,
         baseDelayMs: env.RETRY_BASE_DELAY_MS
-      }
+      },
+      reconcileIntervalMs: env.RECONCILE_INTERVAL_MS
     },
     typesense: {
       host: env.TS_NODE_HOST,

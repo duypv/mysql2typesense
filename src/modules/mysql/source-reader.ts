@@ -33,4 +33,39 @@ export class MySqlSourceReader {
       cursor = typeof nextCursor === "bigint" ? Number(nextCursor) : (nextCursor as string | number);
     }
   }
+
+  /**
+   * Streams only the primary key column from a table, batched. Used by the
+   * reconciliation service to build a Set of live PKs without paying the cost
+   * of SELECT * on huge tables.
+   */
+  async *scanPrimaryKeys(table: TableSyncConfig, batchSize: number): AsyncGenerator<Array<string | number>> {
+    let cursor: string | number | null = null;
+    const tableName = `${quoteIdentifier(table.database)}.${quoteIdentifier(table.table)}`;
+    const primaryKey = quoteIdentifier(table.primaryKey);
+
+    while (true) {
+      const [rows] = await this.pool.query<RowDataPacket[]>(
+        cursor === null
+          ? `SELECT ${primaryKey} FROM ${tableName} ORDER BY ${primaryKey} ASC LIMIT ?`
+          : `SELECT ${primaryKey} FROM ${tableName} WHERE ${primaryKey} > ? ORDER BY ${primaryKey} ASC LIMIT ?`,
+        cursor === null ? [batchSize] : [cursor, batchSize]
+      );
+
+      if (rows.length === 0) {
+        break;
+      }
+
+      const ids = rows
+        .map((row) => row[table.primaryKey])
+        .filter((value): value is string | number | bigint => value !== null && value !== undefined)
+        .map((value) => (typeof value === "bigint" ? Number(value) : (value as string | number)));
+
+      yield ids;
+
+      const lastRow = rows[rows.length - 1] as Record<string, unknown>;
+      const nextCursor = lastRow[table.primaryKey];
+      cursor = typeof nextCursor === "bigint" ? Number(nextCursor) : (nextCursor as string | number);
+    }
+  }
 }

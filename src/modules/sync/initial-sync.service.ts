@@ -5,6 +5,7 @@ import { withRetry } from "../../utils/retry.js";
 import type { MySqlSourceReader } from "../mysql/source-reader.js";
 import type { TypesenseCollectionManager } from "../typesense/collection-manager.js";
 import type { TypesenseDocumentIndexer } from "../typesense/document-indexer.js";
+import type { ReconciliationService } from "./reconciliation.service.js";
 
 /**
  * Topologically sorts tables so that referenced (parent) collections come before
@@ -67,7 +68,8 @@ export class InitialSyncService {
     private readonly batchSize: number,
     private readonly retryConfig: { maxAttempts: number; baseDelayMs: number },
     private readonly logger: Logger,
-    private readonly monitor: SyncMonitor
+    private readonly monitor: SyncMonitor,
+    private readonly reconciliation?: ReconciliationService
   ) {}
 
   async run(tables: TableSyncConfig[]): Promise<void> {
@@ -144,6 +146,27 @@ export class InitialSyncService {
           this.monitor.recordError(error, `initial:${tableKey}`);
           throw error;
         }
+      }
+    }
+
+    // Phase 3: reconcile stale documents.
+    //
+    // Force-recreate in Phase 1 wipes the collection, but a row deleted from MySQL
+    // DURING Phase 2 (after it was scanned but before checkpoint alignment) will
+    // remain in Typesense forever — the binlog delete event is skipped because the
+    // post-init checkpoint align jumps over it.
+    //
+    // Reconcile catches these by direct comparison of MySQL primary keys vs Typesense
+    // document IDs. Safe with force-recreate because at this point the collection is
+    // expected to contain exactly the imported rows.
+    if (this.reconciliation) {
+      try {
+        const deleted = await this.reconciliation.reconcileAll(orderedTables);
+        if (deleted > 0) {
+          this.logger.warn({ deleted }, "Initial sync reconcile removed stale documents missed by import");
+        }
+      } catch (error) {
+        this.logger.error({ error }, "Initial sync reconcile failed");
       }
     }
 

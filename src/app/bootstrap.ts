@@ -15,6 +15,7 @@ import { InMemorySyncMonitor } from "../modules/monitoring/sync-monitor.js";
 import { MySqlSourceReader } from "../modules/mysql/source-reader.js";
 import { InitialSyncService } from "../modules/sync/initial-sync.service.js";
 import { RealtimeSyncService } from "../modules/sync/realtime-sync.service.js";
+import { ReconciliationService } from "../modules/sync/reconciliation.service.js";
 import { resolveTableConfigs } from "../modules/sync/table-config-resolver.js";
 import { ConfigDrivenTransformer } from "../modules/transform/transformer.js";
 import { createTypesenseClient } from "../modules/typesense/client.js";
@@ -58,6 +59,8 @@ export async function bootstrap(): Promise<AppContext> {
   );
   const startupDiscoveredTables = new Set(resolvedTables.map((table) => `${table.database}.${table.table}`));
   const runtimeDiscoveredTables = new Set<string>();
+  let reconcileTimer: NodeJS.Timeout | null = null;
+  let reconcileInFlight = false;
   const monitor = new InMemorySyncMonitor();
   monitor.setTables(resolvedTables);
 
@@ -97,6 +100,16 @@ export async function bootstrap(): Promise<AppContext> {
     );
   }
 
+  const reconciliationService = new ReconciliationService(
+    sourceReader,
+    typesenseClient,
+    documentIndexer,
+    config.sync.batchSize,
+    config.sync.retry,
+    logger,
+    monitor
+  );
+
   const initialSyncService = new InitialSyncService(
     sourceReader,
     collectionManager,
@@ -105,7 +118,8 @@ export async function bootstrap(): Promise<AppContext> {
     config.sync.batchSize,
     config.sync.retry,
     logger,
-    monitor
+    monitor,
+    reconciliationService
   );
 
   const realtimeSyncService = new RealtimeSyncService(
@@ -635,6 +649,38 @@ export async function bootstrap(): Promise<AppContext> {
     });
   }
 
+  if (config.sync.reconcileIntervalMs > 0) {
+    logger.info(
+      { intervalMs: config.sync.reconcileIntervalMs },
+      "Periodic reconciliation enabled (catches deletes missed by binlog)"
+    );
+    reconcileTimer = setInterval(() => {
+      void (async () => {
+        if (reconcileInFlight || refreshInProgress || resetInProgress || reindexInFlight.size > 0) {
+          return;
+        }
+        const mode = monitor.snapshot().mode;
+        if (mode !== "realtime") {
+          return;
+        }
+        reconcileInFlight = true;
+        try {
+          const deleted = await reconciliationService.reconcileAll(resolvedTables);
+          if (deleted > 0) {
+            logger.warn({ deleted }, "Periodic reconcile removed stale documents (likely missed binlog deletes)");
+          }
+        } catch (error) {
+          logger.error({ error }, "Periodic reconcile failed");
+          monitor.recordError(error, "reconcile:periodic");
+        } finally {
+          reconcileInFlight = false;
+        }
+      })();
+    }, config.sync.reconcileIntervalMs);
+  } else {
+    logger.info("Periodic reconciliation disabled (RECONCILE_INTERVAL_MS=0)");
+  }
+
   return {
     config,
     tables: resolvedTables,
@@ -648,6 +694,10 @@ export async function bootstrap(): Promise<AppContext> {
       if (tableRefreshTimer) {
         clearInterval(tableRefreshTimer);
         tableRefreshTimer = null;
+      }
+      if (reconcileTimer) {
+        clearInterval(reconcileTimer);
+        reconcileTimer = null;
       }
       await mysqlPool.end();
       await binlogListener.stop();
