@@ -51,10 +51,14 @@ export class ReconciliationService {
     let typesenseTotal = 0;
     const staleIds: string[] = [];
     try {
-      const exportPayload = await this.typesenseClient
-        .collections(table.collection)
-        .documents()
-        .export({ include_fields: "id" });
+      const exportPayload = await withRetry(
+        () =>
+          this.typesenseClient
+            .collections(table.collection)
+            .documents()
+            .export({ include_fields: "id" }),
+        this.retryConfig
+      );
 
       if (typeof exportPayload === "string" && exportPayload.length > 0) {
         for (const rawLine of exportPayload.split("\n")) {
