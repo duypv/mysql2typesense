@@ -182,6 +182,12 @@ export interface AppConfig {
     user: string;
     password: string;
     database: string;
+    /**
+     * UTC offset of the MySQL server ("+07:00", "Z", or "local").
+     * Used to interpret timezone-naive DATETIME/DATE values so Typesense
+     * stores true absolute instants on both sync paths.
+     */
+    timezone: string;
   };
   sync: {
     batchSize: number;

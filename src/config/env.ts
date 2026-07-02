@@ -11,6 +11,13 @@ const envSchema = z.object({
   DB_USER: z.string().min(1),
   DB_PASS: z.string().default(""),
   DB_NAME: z.string().min(1).default("app"),
+  // UTC offset of the MySQL server ("+07:00", "Z") or "local" (Node process tz).
+  // Timezone-naive DATETIME/DATE values are interpreted in this timezone so
+  // Typesense always stores true absolute instants (epoch).
+  DB_TIMEZONE: z
+    .string()
+    .regex(/^(local|Z|[+-]\d{2}:\d{2})$/, 'DB_TIMEZONE must be "local", "Z" or "+HH:MM"/"-HH:MM"')
+    .default("+07:00"),
   SYNC_CONFIG_PATH: z.string().min(1).default("config/sync.config.json"),
   SYNC_BATCH_SIZE: z.coerce.number().int().positive().default(1000),
   TS_NODE_HOST: z.string().min(1),
@@ -47,7 +54,8 @@ export function loadConfig(): AppConfig {
       port: env.DB_PORT,
       user: env.DB_USER,
       password: env.DB_PASS,
-      database: env.DB_NAME
+      database: env.DB_NAME,
+      timezone: env.DB_TIMEZONE
     },
     sync: {
       batchSize: env.SYNC_BATCH_SIZE,

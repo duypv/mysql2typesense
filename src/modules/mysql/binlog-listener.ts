@@ -8,10 +8,18 @@ import type {
   CheckpointStore,
   TableSyncConfig
 } from "../../core/types.js";
+import {
+  collectWallClockColumns,
+  normalizeBinlogRow,
+  type BinlogColumnSchema
+} from "./binlog-row-normalizer.js";
 
 type RawBinlogEvent = {
   getEventName?: () => string;
-  tableMap?: Record<number, { parentSchema?: string; tableName?: string }>;
+  tableMap?: Record<
+    number,
+    { parentSchema?: string; tableName?: string; columnSchemas?: BinlogColumnSchema[] }
+  >;
   tableId?: number;
   rows?: Array<Record<string, unknown> | { before?: Record<string, unknown>; after?: Record<string, unknown> }>;
   nextPosition?: number;
@@ -426,6 +434,14 @@ export class MySqlBinlogListener implements BinlogListener {
     };
     this.currentCheckpoint = checkpoint;
 
+    // zongji decodes DATETIME/DATE as "wall clock read as UTC" while TIMESTAMP is
+    // a true epoch. Shift wall-clock columns to true instants so both sync paths
+    // store the same absolute time in Typesense.
+    const wallClockColumns = collectWallClockColumns(
+      event.tableId !== undefined ? event.tableMap?.[event.tableId]?.columnSchemas : undefined
+    );
+    const timezone = this.config.mysql.timezone ?? "local";
+
     for (const row of event.rows) {
       const normalized =
         typeof row === "object" && row !== null && ("before" in row || "after" in row)
@@ -434,6 +450,11 @@ export class MySqlBinlogListener implements BinlogListener {
               before: eventName === "deleterows" ? (row as Record<string, unknown>) : undefined,
               after: eventName !== "deleterows" ? (row as Record<string, unknown>) : undefined
             } as { before?: Record<string, unknown>; after?: Record<string, unknown> });
+
+      if (wallClockColumns.length > 0) {
+        if (normalized.before) normalizeBinlogRow(normalized.before, wallClockColumns, timezone);
+        if (normalized.after) normalizeBinlogRow(normalized.after, wallClockColumns, timezone);
+      }
 
       if (eventName === "deleterows") {
         await onChange({

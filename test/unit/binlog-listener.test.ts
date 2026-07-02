@@ -50,9 +50,9 @@ import { MySqlBinlogListener } from "../../src/modules/mysql/binlog-listener.js"
 // Test helpers
 // ---------------------------------------------------------------------------
 
-function makeConfig(): AppConfig {
+function makeConfig(timezone = "local"): AppConfig {
   return {
-    mysql: { host: "localhost", port: 3306, user: "user", password: "pass", database: "db" },
+    mysql: { host: "localhost", port: 3306, user: "user", password: "pass", database: "db", timezone },
     sync: {
       batchSize: 100,
       database: undefined,
@@ -101,10 +101,11 @@ async function tick(): Promise<void> {
 /** Start a listener, await ZongJi creation, emit "ready", and resolve start(). */
 async function startListener(
   tables: TableSyncConfig[] = [],
-  store: CheckpointStore = makeCheckpointStore()
+  store: CheckpointStore = makeCheckpointStore(),
+  config: AppConfig = makeConfig()
 ) {
   const onChange = vi.fn().mockResolvedValue(undefined);
-  const listener = new MySqlBinlogListener(makeConfig(), tables, store);
+  const listener = new MySqlBinlogListener(config, tables, store);
   const p = listener.start(onChange);
   // start() awaits checkpointStore.load() before calling connectZongJi / creating ZongJi.
   // One tick drains all pending microtasks so the ZongJi instance exists in state.instances.
@@ -472,6 +473,94 @@ describe("event routing", () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
       checkpoint: expect.objectContaining({ filename: "mysql-bin.000004", position: 500 })
     }));
+    await listener.stop();
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("datetime normalization (source timezone)", () => {
+  const columnSchemas = [
+    { COLUMN_NAME: "id", COLUMN_TYPE: "bigint" },
+    { COLUMN_NAME: "created_at", COLUMN_TYPE: "datetime" },
+    { COLUMN_NAME: "synced_at", COLUMN_TYPE: "timestamp" }
+  ];
+
+  function makeEventWithSchemas(eventName: string, rows: unknown[]) {
+    return {
+      getEventName: () => eventName,
+      tableMap: { 1: { parentSchema: "db", tableName: "users", columnSchemas } },
+      tableId: 1,
+      rows,
+      nextPosition: 500,
+      binlogName: "mysql-bin.000004"
+    };
+  }
+
+  it("shifts DATETIME values to true instants using mysql.timezone (+07:00)", async () => {
+    const { listener, onChange } = await startListener(
+      [makeTable()],
+      makeCheckpointStore(),
+      makeConfig("+07:00")
+    );
+
+    lastInst().emit("binlog", makeEventWithSchemas("writerows", [
+      {
+        id: 1,
+        // DB wall clock 18:00 (+07) decoded by zongji as 18:00Z
+        created_at: new Date("2026-07-02T18:00:00Z"),
+        // TIMESTAMP already decoded as the true instant
+        synced_at: new Date("2026-07-02T11:00:00Z")
+      }
+    ]));
+    await tick();
+
+    const call = (onChange as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      after: Record<string, unknown>;
+    };
+    expect((call.after.created_at as Date).toISOString()).toBe("2026-07-02T11:00:00.000Z");
+    expect((call.after.synced_at as Date).toISOString()).toBe("2026-07-02T11:00:00.000Z");
+    await listener.stop();
+  });
+
+  it("normalizes both before and after rows for updaterows", async () => {
+    const { listener, onChange } = await startListener(
+      [makeTable()],
+      makeCheckpointStore(),
+      makeConfig("+07:00")
+    );
+
+    lastInst().emit("binlog", makeEventWithSchemas("updaterows", [
+      {
+        before: { id: 1, created_at: new Date("2026-07-02T18:00:00Z") },
+        after: { id: 1, created_at: new Date("2026-07-03T09:30:00Z") }
+      }
+    ]));
+    await tick();
+
+    const call = (onChange as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      before: Record<string, unknown>;
+      after: Record<string, unknown>;
+    };
+    expect((call.before.created_at as Date).toISOString()).toBe("2026-07-02T11:00:00.000Z");
+    expect((call.after.created_at as Date).toISOString()).toBe("2026-07-03T02:30:00.000Z");
+    await listener.stop();
+  });
+
+  it("leaves rows untouched when the event carries no column schemas", async () => {
+    const { listener, onChange } = await startListener(
+      [makeTable()],
+      makeCheckpointStore(),
+      makeConfig("+07:00")
+    );
+
+    const created = new Date("2026-07-02T18:00:00Z");
+    lastInst().emit("binlog", makeBinlogEvent("writerows", [{ id: 1, created_at: new Date(created) }]));
+    await tick();
+
+    const call = (onChange as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      after: Record<string, unknown>;
+    };
+    expect((call.after.created_at as Date).getTime()).toBe(created.getTime());
     await listener.stop();
   });
 });

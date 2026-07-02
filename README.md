@@ -85,6 +85,11 @@ DB_PORT=3306
 DB_USER=root
 DB_PASS=secret
 DB_NAME=app
+# UTC offset of the MySQL server ("+07:00", "Z") or "local". Default: +07:00.
+# DATETIME/DATE columns are timezone-naive; this offset is used to convert them
+# to true epoch instants in Typesense. Set it to the server's time zone
+# (SELECT @@system_time_zone) — e.g. +07:00 for Asia/Ho_Chi_Minh.
+DB_TIMEZONE=+07:00
 
 SYNC_CONFIG_PATH=config/sync.config.json
 SYNC_BATCH_SIZE=1000
@@ -362,6 +367,7 @@ docker run -d --name mysql2typesense \
   -e DB_USER=your_mysql_user \
   -e DB_PASS=your_mysql_password \
   -e DB_NAME=your_mysql_database \
+  -e DB_TIMEZONE=+07:00 \
   -e SYNC_CONFIG_PATH=/app/config/sync.config.json \
   -e TS_NODE_HOST=your_typesense_host \
   -e TS_NODE_PORT=8108 \
@@ -389,6 +395,7 @@ docker run -d --name mysql2typesense \
   -e DB_USER=your_mysql_user \
   -e DB_PASS=your_mysql_password \
   -e DB_NAME=your_mysql_database \
+  -e DB_TIMEZONE=+07:00 \
   -e SYNC_CONFIG_PATH=/app/config/sync.config.json \
   -e TS_NODE_HOST=your_typesense_host \
   -e TS_NODE_PORT=8108 \
@@ -416,6 +423,7 @@ services:
       DB_USER: sync_user
       DB_PASS: your_password
       DB_NAME: app
+      DB_TIMEZONE: "+07:00"
       SYNC_CONFIG_PATH: /app/config/sync.config.json
       TS_NODE_HOST: typesense
       TS_NODE_PORT: 8108

@@ -84,6 +84,8 @@ services:
       DB_USER: root
       DB_PASS: root
       DB_NAME: app
+      # Local compose MySQL runs in UTC; production servers should set their real offset (e.g. +07:00)
+      DB_TIMEZONE: "Z"
       SYNC_CONFIG_PATH: /app/config/sync.config.json
       SYNC_BATCH_SIZE: 100
       TS_NODE_HOST: typesense
