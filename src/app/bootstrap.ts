@@ -355,6 +355,7 @@ export async function bootstrap(): Promise<AppContext> {
           const refreshed = refreshedByKey.get(key);
           if (refreshed) {
             resolvedTables[i] = refreshed;
+            binlogListener.registerTable?.(refreshed);
           }
         }
 

@@ -585,4 +585,29 @@ describe("registerTable()", () => {
     // No assertion needed — just ensure no throw and tableByKey has 1 entry
     await listener.stop();
   });
+
+  // Regression: ALTER TABLE ADD COLUMN while the process is running.
+  // /api/update-schema rebuilds the TableSyncConfig, but the listener kept the
+  // stale one, so realtime documents silently omitted the new column.
+  it("replaces the config of an already-registered table so new columns reach onChange", async () => {
+    const stale = makeTable("MedicalService", "db");
+    const { listener, onChange } = await startListener([stale]);
+
+    const refreshed = makeTable("MedicalService", "db");
+    refreshed.transform.fieldMappings = [
+      { source: "id", target: "id", type: "string" },
+      { source: "SpecialtyName", target: "SpecialtyName", type: "string" }
+    ];
+    listener.registerTable(refreshed);
+
+    lastInst().emit(
+      "binlog",
+      makeBinlogEvent("updaterows", [{ after: { id: 3, SpecialtyName: "Sản phụ khoa 7" } }], 1, "db", "MedicalService")
+    );
+    await tick();
+
+    const emitted = onChange.mock.calls[0][0] as { table: TableSyncConfig };
+    expect(emitted.table.transform.fieldMappings.map((m) => m.source)).toContain("SpecialtyName");
+    await listener.stop();
+  });
 });

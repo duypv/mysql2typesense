@@ -64,11 +64,20 @@ export class MySqlBinlogListener implements BinlogListener {
     return this.connected;
   }
 
+  /**
+   * Registers a table, or replaces the config of an already-registered one.
+   * Replacing matters after ALTER TABLE: callers re-introspect the schema and
+   * hand us a new config, and realtime events must be transformed with it —
+   * otherwise documents silently omit columns added since startup.
+   */
   registerTable(table: TableSyncConfig): void {
     const key = this.tableKey(table.database, table.table);
-    if (!this.tableByKey.has(key)) {
-      this.tableByKey.set(key, table);
+    const isNew = !this.tableByKey.has(key);
+    this.tableByKey.set(key, table);
+    if (isNew) {
       this.logger?.info({ table: key }, "Registered table for realtime sync");
+    } else {
+      this.logger?.debug({ table: key }, "Refreshed table config for realtime sync");
     }
   }
 
