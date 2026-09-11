@@ -206,6 +206,38 @@ describe.skipIf(SKIP)("realtime sync — UPDATE", () => {
   );
 
   it(
+    "column updated to NULL is removed from the Typesense document",
+    { timeout: 25_000 },
+    async () => {
+      // Give the column a value first, and wait for it to land in Typesense.
+      await mysqlQuery("UPDATE users SET tags = 'alpha', updated_at = NOW() WHERE id = ?", [testUserId]);
+      await poll(
+        async () => {
+          const data = await tsSearch<{ tags?: unknown }>("users", "email", testEmail);
+          return data.found > 0 && data.hits[0].document.tags !== undefined ? true : null;
+        },
+        { timeout: 12_000, label: "tags value to appear in Typesense" }
+      );
+
+      // Now clear it: the field must disappear from the document, not keep "alpha".
+      await mysqlQuery("UPDATE users SET tags = NULL, updated_at = NOW() WHERE id = ?", [testUserId]);
+
+      const cleared = await poll(
+        async () => {
+          const data = await tsSearch<{ tags?: unknown }>("users", "email", testEmail);
+          if (data.found > 0 && !hasValue(data.hits[0].document.tags)) {
+            return data;
+          }
+          return null;
+        },
+        { timeout: 12_000, label: "tags to be cleared in Typesense" }
+      );
+
+      expect(hasValue(cleared.hits[0].document.tags)).toBe(false);
+    }
+  );
+
+  it(
     "updated user is_active reflected in Typesense",
     { timeout: 20_000 },
     async () => {
@@ -528,3 +560,10 @@ describe.skipIf(SKIP)("realtime sync — field type coercions", () => {
     }
   );
 });
+
+/** A cleared field is either absent or an empty array/string, depending on the mapped type. */
+function hasValue(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  return value !== "";
+}

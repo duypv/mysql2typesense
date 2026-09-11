@@ -1,9 +1,13 @@
+import type { Logger } from "pino";
 import type { Client } from "typesense";
 
 import type { SyncDocument, TableSyncConfig } from "../../core/types.js";
 
 export class TypesenseDocumentIndexer {
-  constructor(private readonly client: Client) {}
+  constructor(
+    private readonly client: Client,
+    private readonly logger?: Logger
+  ) {}
 
   async importDocuments(table: TableSyncConfig, documents: SyncDocument[]): Promise<void> {
     if (documents.length === 0) {
@@ -16,7 +20,12 @@ export class TypesenseDocumentIndexer {
       .import(documents, { action: "upsert", dirty_values: "coerce_or_drop" });
   }
 
-  async upsertDocument(table: TableSyncConfig, document: SyncDocument): Promise<void> {
+  /**
+   * Indexes a realtime change. `nullFields` lists target fields whose source column
+   * was explicitly set to NULL: emplace is a partial update, so omitting them would
+   * leave the previous value in place. They are patched to null in a follow-up call.
+   */
+  async upsertDocument(table: TableSyncConfig, document: SyncDocument, nullFields: string[] = []): Promise<void> {
     try {
       await this.client
         .collections(table.collection)
@@ -35,7 +44,10 @@ export class TypesenseDocumentIndexer {
       // the document will be created during the next initial sync or full-row event.
       if (reason.includes("not found in the document")) {
         try {
-          await this.client.collections(table.collection).documents(document.id).update(document);
+          await this.client
+            .collections(table.collection)
+            .documents(document.id)
+            .update({ ...document, ...nullPayload(nullFields) });
         } catch (updateError: unknown) {
           const status = (updateError as any)?.httpStatus;
           if (status === 404) {
@@ -47,6 +59,35 @@ export class TypesenseDocumentIndexer {
       }
 
       throw new Error(`Typesense import failed for document ${document.id}: ${reason}`);
+    }
+
+    await this.resetNullFields(table, document.id, nullFields);
+  }
+
+  /** Patches explicitly-nulled fields to null so Typesense drops their previous value. */
+  private async resetNullFields(table: TableSyncConfig, documentId: string, nullFields: string[]): Promise<void> {
+    if (nullFields.length === 0) {
+      return;
+    }
+
+    try {
+      await this.client.collections(table.collection).documents(documentId).update(nullPayload(nullFields));
+    } catch (error: unknown) {
+      const status = (error as { httpStatus?: number })?.httpStatus;
+      if (status === 404) {
+        return; // document not yet indexed — nothing to reset
+      }
+      if (status === 400) {
+        // Typesense refuses null on a non-optional field (e.g. a join reference
+        // target). The emplace already succeeded, so keep it rather than failing
+        // the whole event; the stale field value is reported instead.
+        this.logger?.warn(
+          { collection: table.collection, documentId, nullFields, reason: (error as Error).message },
+          "Could not reset NULL fields in Typesense (field is not optional)"
+        );
+        return;
+      }
+      throw error;
     }
   }
 
@@ -62,4 +103,8 @@ export class TypesenseDocumentIndexer {
       throw error;
     }
   }
+}
+
+function nullPayload(fields: string[]): Record<string, null> {
+  return Object.fromEntries(fields.map((field) => [field, null]));
 }

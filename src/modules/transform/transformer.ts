@@ -37,6 +37,30 @@ export class ConfigDrivenTransformer implements DocumentTransformer {
     return document;
   }
 
+  /**
+   * Returns the target field names whose source column is PRESENT in the row but
+   * resolves to null/undefined — i.e. the column was explicitly set to NULL.
+   * Columns absent from the row (partial binlog events) are never reported, so
+   * callers can tell "cleared" apart from "unchanged". The id target is excluded:
+   * a document id can never be reset.
+   */
+  collectNullTargets(row: Record<string, unknown>, table: TableSyncConfig): string[] {
+    const targets: string[] = [];
+
+    for (const mapping of table.transform.fieldMappings) {
+      if (mapping.target === "id" || !(mapping.source in row)) {
+        continue;
+      }
+
+      const resolvedValue = this.resolveValue(row[mapping.source], mapping);
+      if (resolvedValue === undefined || resolvedValue === null) {
+        targets.push(mapping.target);
+      }
+    }
+
+    return targets;
+  }
+
   private resolveValue(rawValue: unknown, mapping: TransformFieldMapping): unknown {
     const value = rawValue ?? mapping.defaultValue;
     if (value === undefined || value === null) {

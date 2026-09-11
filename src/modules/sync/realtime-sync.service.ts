@@ -60,7 +60,13 @@ export class RealtimeSyncService {
           }
 
           const document = await this.transformer.toDocument(event.after, event.table);
-          await withRetry(() => this.documentIndexer.upsertDocument(event.table, document), this.retryConfig);
+          // Columns present in the event but set to NULL must be reset explicitly:
+          // they are dropped from the document, and emplace would keep the old value.
+          const nullFields = this.transformer.collectNullTargets(event.after, event.table);
+          await withRetry(
+            () => this.documentIndexer.upsertDocument(event.table, document, nullFields),
+            this.retryConfig
+          );
         }
 
         if (event.checkpoint) {

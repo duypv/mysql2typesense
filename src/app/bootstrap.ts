@@ -67,7 +67,7 @@ export async function bootstrap(): Promise<AppContext> {
   const checkpointStore = await createCheckpointStore(config);
   const typesenseClient = createTypesenseClient(config);
   const collectionManager = new TypesenseCollectionManager(typesenseClient, logger);
-  const documentIndexer = new TypesenseDocumentIndexer(typesenseClient);
+  const documentIndexer = new TypesenseDocumentIndexer(typesenseClient, logger);
   const transformer = new ConfigDrivenTransformer();
   const binlogListener = new MySqlBinlogListener(config, resolvedTables, checkpointStore, logger);
   const reindexInFlight = new Set<string>();

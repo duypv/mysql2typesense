@@ -259,6 +259,8 @@ export interface CheckpointStore {
 
 export interface DocumentTransformer {
   toDocument(row: Record<string, unknown>, table: TableSyncConfig): Promise<SyncDocument>;
+  /** Target fields whose source column is present in the row but explicitly NULL. */
+  collectNullTargets(row: Record<string, unknown>, table: TableSyncConfig): string[];
 }
 
 export interface BinlogListener {

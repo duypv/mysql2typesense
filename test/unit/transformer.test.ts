@@ -387,3 +387,71 @@ describe("ConfigDrivenTransformer — datetime sourceFormat", () => {
     expect(doc["ts"]).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Null target collection (fields explicitly set to NULL in the source row)
+// ---------------------------------------------------------------------------
+describe("ConfigDrivenTransformer.collectNullTargets", () => {
+  const nullableTable = () =>
+    makeTable({
+      transform: {
+        dropNulls: true,
+        fieldMappings: [
+          { source: "id", target: "id", type: "string" },
+          { source: "note", target: "note", type: "string", optional: true },
+          { source: "score", target: "score", type: "int64", optional: true }
+        ]
+      }
+    });
+
+  it("returns target of a column present in the row with a NULL value", () => {
+    expect(transformer.collectNullTargets({ id: 1, note: null, score: 5 }, nullableTable())).toEqual(["note"]);
+  });
+
+  it("ignores columns absent from the row (partial binlog event)", () => {
+    expect(transformer.collectNullTargets({ id: 1, score: 5 }, nullableTable())).toEqual([]);
+  });
+
+  it("ignores columns that carry a value", () => {
+    expect(transformer.collectNullTargets({ id: 1, note: "hi", score: 5 }, nullableTable())).toEqual([]);
+  });
+
+  it("never returns the id target even when the mapped column is NULL", () => {
+    const table = makeTable({
+      transform: {
+        dropNulls: true,
+        fieldMappings: [
+          { source: "id", target: "id", type: "string" },
+          { source: "code", target: "id", type: "string", optional: true }
+        ]
+      }
+    });
+    expect(transformer.collectNullTargets({ id: 1, code: null }, table)).toEqual([]);
+  });
+
+  it("ignores NULL columns that resolve to a defaultValue", () => {
+    const table = makeTable({
+      transform: {
+        dropNulls: true,
+        fieldMappings: [
+          { source: "id", target: "id", type: "string" },
+          { source: "count", target: "count", type: "int64", defaultValue: 0, optional: true }
+        ]
+      }
+    });
+    expect(transformer.collectNullTargets({ id: 1, count: null }, table)).toEqual([]);
+  });
+
+  it("returns target for a datetime column cleared to an empty string", () => {
+    const table = makeTable({
+      transform: {
+        dropNulls: true,
+        fieldMappings: [
+          { source: "id", target: "id", type: "string" },
+          { source: "ts", target: "ts", type: "int64", sourceFormat: "datetime", optional: true }
+        ]
+      }
+    });
+    expect(transformer.collectNullTargets({ id: 1, ts: null }, table)).toEqual(["ts"]);
+  });
+});
