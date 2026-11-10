@@ -89,7 +89,11 @@ export class ConfigDrivenTransformer implements DocumentTransformer {
         }
 
         try {
-          return this.ensureJsonArray(this.sanitizeJsonForTypesense(JSON.parse(trimmed)));
+          // A JSON column can hold a JSON string whose text is itself an object.
+          // mysql2 (initial sync) hands us that inner text while zongji (realtime)
+          // hands us the encoded string; unwrap it so both paths index an object.
+          const parsed = this.parseJsonObjectString(JSON.parse(trimmed));
+          return this.ensureJsonArray(this.sanitizeJsonForTypesense(parsed));
         } catch {
           // JSON parse failed — commonly legacy CSV text like "1,2,3".
           // Split by comma and coerce individual items.

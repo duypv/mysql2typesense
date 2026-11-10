@@ -232,6 +232,17 @@ describe("ConfigDrivenTransformer — json sourceFormat", () => {
     expect(await jsonField([{ a: 1 }, '{"a":2}'])).toEqual([{ a: 1 }, { a: 2 }]);
   });
 
+  // Regression: a JSON column holding a JSON *string* ('"{\"OrderDetailID\":6688}"').
+  // mysql2 (initial sync) returns the inner text, which parses to an object, but
+  // zongji (realtime) returns the encoded string, which parsed to ["{...}"] and
+  // clashed with the object schema from initial sync.
+  it("unwraps a double-encoded JSON object string the way initial sync sees it", async () => {
+    const inner = '{"OrderDetailID":6688,"ServiceID":140,"OrderID":950}';
+    const expected = { OrderDetailID: 6688, ServiceID: 140, OrderID: 950 };
+    expect(await jsonField(JSON.stringify(inner))).toEqual(expected); // realtime (zongji)
+    expect(await jsonField(inner)).toEqual(expected); // initial sync (mysql2)
+  });
+
   it("drops null elements from a scalar array", async () => {
     expect(await jsonField([1, null, 2])).toEqual([1, 2]);
   });
