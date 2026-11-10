@@ -44,6 +44,10 @@ export class MySqlBinlogListener implements BinlogListener {
   private lastEventAt: number = Date.now();
   private savedOnChange: ((event: ChangeEvent) => Promise<void>) | null = null;
   private readonly tableByKey = new Map<string, TableSyncConfig>();
+  // ZongJi emits "binlog" without awaiting listeners. Chaining handlers keeps events
+  // strictly in binlog order; otherwise two quick updates to the same row are
+  // indexed concurrently and the older value can be written to Typesense last.
+  private eventQueue: Promise<void> = Promise.resolve();
 
   private logger: any = null;
 
@@ -298,14 +302,16 @@ export class MySqlBinlogListener implements BinlogListener {
         resolve();
       };
 
-      const handleEvent = async (event: RawBinlogEvent) => {
-        try {
-          this.lastEventAt = Date.now();
-          this.logger?.debug({ eventName: event.getEventName?.() }, "Binlog event received");
-          await this.handleEvent(event, onChange);
-        } catch (error) {
-          this.logger?.error({ error }, "Error handling binlog event");
-        }
+      const handleEvent = (event: RawBinlogEvent) => {
+        this.lastEventAt = Date.now();
+        this.eventQueue = this.eventQueue.then(async () => {
+          try {
+            this.logger?.debug({ eventName: event.getEventName?.() }, "Binlog event received");
+            await this.handleEvent(event, onChange);
+          } catch (error) {
+            this.logger?.error({ error }, "Error handling binlog event");
+          }
+        });
       };
 
       this.zongji.on("ready", handleReady);

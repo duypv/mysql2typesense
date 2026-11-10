@@ -478,6 +478,51 @@ describe("event routing", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Regression: ZongJi emits "binlog" without awaiting the async handler, so two
+// quick updates to the same row (Receipt status -1 then 7 on the last refund)
+// were indexed concurrently and the older status could land in Typesense last.
+describe("event ordering", () => {
+  it("does not start the next event until onChange for the previous one resolves", async () => {
+    const { listener, onChange } = await startListener([makeTable("Receipt")]);
+
+    const order: string[] = [];
+    let releaseFirst!: () => void;
+    onChange.mockImplementation(async (event: { after: { Status: number } }) => {
+      order.push(`start:${event.after.Status}`);
+      if (event.after.Status === -1) {
+        await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      }
+      order.push(`end:${event.after.Status}`);
+    });
+
+    lastInst().emit("binlog", makeBinlogEvent("updaterows", [
+      { before: { id: 1, Status: 1 }, after: { id: 1, Status: -1 } }
+    ], 1, "db", "Receipt"));
+    lastInst().emit("binlog", makeBinlogEvent("updaterows", [
+      { before: { id: 1, Status: -1 }, after: { id: 1, Status: 7 } }
+    ], 1, "db", "Receipt"));
+    await tick();
+
+    expect(order).toEqual(["start:-1"]);
+
+    releaseFirst();
+    await vi.waitFor(() => expect(order).toEqual(["start:-1", "end:-1", "start:7", "end:7"]));
+    await listener.stop();
+  });
+
+  it("keeps processing later events after one handler throws", async () => {
+    const { listener, onChange } = await startListener([makeTable()]);
+    onChange.mockRejectedValueOnce(new Error("boom"));
+
+    lastInst().emit("binlog", makeBinlogEvent("writerows", [{ id: 1 }]));
+    lastInst().emit("binlog", makeBinlogEvent("writerows", [{ id: 2 }]));
+
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(2));
+    await listener.stop();
+  });
+});
+
+// ---------------------------------------------------------------------------
 describe("datetime normalization (source timezone)", () => {
   const columnSchemas = [
     { COLUMN_NAME: "id", COLUMN_TYPE: "bigint" },
