@@ -132,8 +132,18 @@ export class InitialSyncService {
             imported = 0;
             for (const document of documents) {
               try {
-                await withRetry(() => this.documentIndexer.upsertDocument(table, document), this.retryConfig);
+                const droppedFields = await withRetry(
+                  () => this.documentIndexer.upsertDocument(table, document),
+                  this.retryConfig
+                );
                 imported += 1;
+                if (droppedFields.length > 0) {
+                  this.monitor.recordError(
+                    new Error(`Synced without field(s) ${droppedFields.join(", ")}: value type does not match the Typesense schema`),
+                    `initial:${tableKey}:document:${document.id}:dropped-fields`,
+                    document as Record<string, unknown>
+                  );
+                }
               } catch (documentError) {
                 this.monitor.recordError(documentError, `initial:${tableKey}:document:${document.id}`, document as Record<string, unknown>);
               }

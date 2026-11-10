@@ -63,10 +63,17 @@ export class RealtimeSyncService {
           // Columns present in the event but set to NULL must be reset explicitly:
           // they are dropped from the document, and emplace would keep the old value.
           const nullFields = this.transformer.collectNullTargets(event.after, event.table);
-          await withRetry(
+          const droppedFields = await withRetry(
             () => this.documentIndexer.upsertDocument(event.table, document, nullFields),
             this.retryConfig
           );
+          if (droppedFields.length > 0) {
+            this.monitor.recordError(
+              new Error(`Synced without field(s) ${droppedFields.join(", ")}: value type does not match the Typesense schema`),
+              `realtime:${tableKey}:dropped-fields`,
+              document as Record<string, unknown>
+            );
+          }
         }
 
         if (event.checkpoint) {

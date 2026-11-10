@@ -24,44 +24,68 @@ export class TypesenseDocumentIndexer {
    * Indexes a realtime change. `nullFields` lists target fields whose source column
    * was explicitly set to NULL: emplace is a partial update, so omitting them would
    * leave the previous value in place. They are patched to null in a follow-up call.
+   *
+   * An optional field whose value does not match the type Typesense already holds
+   * for it (typically an `auto` JSON column with a different shape) is dropped and
+   * the document retried, so one bad column does not block every other column.
+   * Returns the dropped field names so callers can report them.
    */
-  async upsertDocument(table: TableSyncConfig, document: SyncDocument, nullFields: string[] = []): Promise<void> {
-    try {
-      await this.client
-        .collections(table.collection)
-        .documents()
-        .import([document], { action: "emplace", dirty_values: "coerce_or_drop" });
-    } catch (error: unknown) {
-      if (!(error instanceof Error && "importResults" in error)) {
-        throw error;
-      }
+  async upsertDocument(table: TableSyncConfig, document: SyncDocument, nullFields: string[] = []): Promise<string[]> {
+    const droppedFields: string[] = [];
+    let current = document;
 
-      const results = (error as any).importResults as Array<{ success: boolean; error?: string }>;
-      const reason = results?.find((r) => !r.success)?.error ?? "";
-
-      // Missing required field → partial binlog event. Fall back to partial update
-      // on the existing document; if it doesn't exist yet (404), skip silently —
-      // the document will be created during the next initial sync or full-row event.
-      if (reason.includes("not found in the document")) {
-        try {
-          await this.client
-            .collections(table.collection)
-            .documents(document.id)
-            .update({ ...document, ...nullPayload(nullFields) });
-        } catch (updateError: unknown) {
-          const status = (updateError as any)?.httpStatus;
-          if (status === 404) {
-            return; // document not yet indexed — skip partial event
-          }
-          throw updateError;
+    for (;;) {
+      try {
+        await this.client
+          .collections(table.collection)
+          .documents()
+          .import([current], { action: "emplace", dirty_values: "coerce_or_drop" });
+        break;
+      } catch (error: unknown) {
+        if (!(error instanceof Error && "importResults" in error)) {
+          throw error;
         }
-        return;
-      }
 
-      throw new Error(`Typesense import failed for document ${document.id}: ${reason}`);
+        const results = (error as any).importResults as Array<{ success: boolean; error?: string }>;
+        const reason = results?.find((r) => !r.success)?.error ?? "";
+
+        const mistypedField = droppableMistypedField(table, current, reason);
+        if (mistypedField) {
+          droppedFields.push(mistypedField);
+          const { [mistypedField]: _dropped, ...rest } = current;
+          current = rest as SyncDocument;
+          this.logger?.warn(
+            { collection: table.collection, documentId: document.id, field: mistypedField, reason },
+            "Dropping field with mismatched type and retrying document"
+          );
+          continue;
+        }
+
+        // Missing required field → partial binlog event. Fall back to partial update
+        // on the existing document; if it doesn't exist yet (404), skip silently —
+        // the document will be created during the next initial sync or full-row event.
+        if (reason.includes("not found in the document")) {
+          try {
+            await this.client
+              .collections(table.collection)
+              .documents(current.id)
+              .update({ ...current, ...nullPayload(nullFields) });
+          } catch (updateError: unknown) {
+            const status = (updateError as any)?.httpStatus;
+            if (status === 404) {
+              return droppedFields; // document not yet indexed — skip partial event
+            }
+            throw updateError;
+          }
+          return droppedFields;
+        }
+
+        throw new Error(`Typesense import failed for document ${document.id}: ${reason}`);
+      }
     }
 
     await this.resetNullFields(table, document.id, nullFields);
+    return droppedFields;
   }
 
   /** Patches explicitly-nulled fields to null so Typesense drops their previous value. */
@@ -107,4 +131,26 @@ export class TypesenseDocumentIndexer {
 
 function nullPayload(fields: string[]): Record<string, null> {
   return Object.fromEntries(fields.map((field) => [field, null]));
+}
+
+const TYPE_MISMATCH = /^Field `([^`]+)` (?:has an incorrect type|must be )/;
+
+/**
+ * Returns the top-level field to drop for a Typesense type-mismatch error, or
+ * undefined when the error is something else or the field is required (dropping
+ * it would only turn the error into "not found in the document").
+ */
+function droppableMistypedField(table: TableSyncConfig, document: SyncDocument, reason: string): string | undefined {
+  const fieldPath = TYPE_MISMATCH.exec(reason)?.[1];
+  if (!fieldPath) {
+    return undefined;
+  }
+
+  const field = fieldPath.split(".")[0];
+  if (field === "id" || !(field in document)) {
+    return undefined;
+  }
+
+  const config = table.typesense.fields.find((candidate) => candidate.name === field);
+  return config && !config.optional ? undefined : field;
 }

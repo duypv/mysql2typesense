@@ -64,7 +64,7 @@ describe("TypesenseDocumentIndexer.upsertDocument — null field reset", () => {
     const warn = vi.fn();
     const indexer = new TypesenseDocumentIndexer(client as never, { warn } as never);
 
-    await expect(indexer.upsertDocument(makeTable(), { id: "1" }, ["code"])).resolves.toBeUndefined();
+    await expect(indexer.upsertDocument(makeTable(), { id: "1" }, ["code"])).resolves.toEqual([]);
     expect(warn).toHaveBeenCalledOnce();
   });
 
@@ -81,6 +81,71 @@ describe("TypesenseDocumentIndexer.upsertDocument — null field reset", () => {
     const { client } = makeClient({ update });
     const indexer = new TypesenseDocumentIndexer(client as never);
 
-    await expect(indexer.upsertDocument(makeTable(), { id: "1" }, ["note"])).resolves.toBeUndefined();
+    await expect(indexer.upsertDocument(makeTable(), { id: "1" }, ["note"])).resolves.toEqual([]);
+  });
+});
+
+// Regression: a JSON column whose shape differed from the type Typesense had
+// already inferred (e.g. RefundDetails as string[] vs object[]) rejected the whole
+// document, so unrelated columns such as Status were never synced either.
+describe("TypesenseDocumentIndexer.upsertDocument — field type mismatch", () => {
+  function importError(reason: string) {
+    return Object.assign(new Error("import failed"), { importResults: [{ success: false, error: reason }] });
+  }
+
+  function makeTableWithFields(): TableSyncConfig {
+    const table = makeTable();
+    table.typesense.fields = [
+      { name: "id", type: "string" },
+      { name: "Status", type: "int64", optional: true },
+      { name: "RefundDetails", type: "auto", optional: true },
+      { name: "Code", type: "string" }
+    ];
+    return table;
+  }
+
+  it("retries without the mistyped optional field and reports it", async () => {
+    const importMock = vi
+      .fn()
+      .mockRejectedValueOnce(importError("Field `RefundDetails` has an incorrect type."))
+      .mockResolvedValueOnce([{ success: true }]);
+    const { client } = makeClient({ import: importMock });
+    const indexer = new TypesenseDocumentIndexer(client as never, { warn: vi.fn() } as never);
+
+    const dropped = await indexer.upsertDocument(makeTableWithFields(), { id: "1", Status: 7, RefundDetails: ["x"] });
+
+    expect(dropped).toEqual(["RefundDetails"]);
+    expect(importMock).toHaveBeenCalledTimes(2);
+    expect(importMock.mock.calls[1][0]).toEqual([{ id: "1", Status: 7 }]);
+  });
+
+  it("drops the top-level field when the mismatch is on a nested path", async () => {
+    const importMock = vi
+      .fn()
+      .mockRejectedValueOnce(importError("Field `RefundDetails.Amount` must be an array of int64."))
+      .mockResolvedValueOnce([{ success: true }]);
+    const { client } = makeClient({ import: importMock });
+    const indexer = new TypesenseDocumentIndexer(client as never, { warn: vi.fn() } as never);
+
+    const dropped = await indexer.upsertDocument(makeTableWithFields(), { id: "1", Status: 7, RefundDetails: [{ Amount: "a" }] });
+
+    expect(dropped).toEqual(["RefundDetails"]);
+    expect(importMock.mock.calls[1][0]).toEqual([{ id: "1", Status: 7 }]);
+  });
+
+  it("still fails when the mistyped field is required", async () => {
+    const importMock = vi.fn().mockRejectedValue(importError("Field `Code` must be a string."));
+    const { client } = makeClient({ import: importMock });
+    const indexer = new TypesenseDocumentIndexer(client as never);
+
+    await expect(indexer.upsertDocument(makeTableWithFields(), { id: "1", Code: 5 })).rejects.toThrow("Field `Code` must be a string.");
+    expect(importMock).toHaveBeenCalledOnce();
+  });
+
+  it("returns no dropped fields on a clean import", async () => {
+    const { client } = makeClient();
+    const indexer = new TypesenseDocumentIndexer(client as never);
+
+    await expect(indexer.upsertDocument(makeTableWithFields(), { id: "1", Status: 7 })).resolves.toEqual([]);
   });
 });
