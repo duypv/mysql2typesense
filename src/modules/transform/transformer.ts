@@ -219,6 +219,16 @@ export class ConfigDrivenTransformer implements DocumentTransformer {
         return sanitizedItems;
       }
 
+      // Nulls, empty arrays and JSON-encoded objects carry no conflicting type:
+      // drop/parse them first so e.g. [{...}, null] stays object[] instead of
+      // becoming string[] and clashing with the schema inferred from other rows.
+      const cleanedItems = sanitizedItems
+        .map((item) => this.parseJsonObjectString(item))
+        .filter((item) => item !== null && !(Array.isArray(item) && item.length === 0));
+      if (new Set(cleanedItems.map((item) => this.jsonKind(item))).size <= 1) {
+        return cleanedItems;
+      }
+
       // Typesense nested typing is strict for array element types.
       // Normalize mixed arrays to string[] to avoid schema conflicts.
       return sanitizedItems.map((item) => (typeof item === "string" ? item : JSON.stringify(item)));
@@ -233,6 +243,22 @@ export class ConfigDrivenTransformer implements DocumentTransformer {
     }
 
     return value;
+  }
+
+  /** Parses a string element that holds a JSON object; anything else is returned as-is. */
+  private parseJsonObjectString(value: unknown): unknown {
+    if (typeof value !== "string" || !value.trim().startsWith("{")) {
+      return value;
+    }
+
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+        ? this.sanitizeJsonForTypesense(parsed)
+        : value;
+    } catch {
+      return value;
+    }
   }
 
   private jsonKind(value: unknown): string {

@@ -217,6 +217,25 @@ describe("ConfigDrivenTransformer — json sourceFormat", () => {
     expect((result as string[]).every((v) => typeof v === "string")).toBe(true);
   });
 
+  // Regression: a 2-item RefundDetails/Data array where one element was not a
+  // plain object got stringified to string[], which Typesense rejects against
+  // the object[] schema inferred from 1-item rows ("Field `Data` has an incorrect type").
+  it("drops null elements instead of stringifying an object array", async () => {
+    expect(await jsonField([{ a: 1 }, null])).toEqual([{ a: 1 }]);
+  });
+
+  it("drops empty-array elements instead of stringifying an object array", async () => {
+    expect(await jsonField([{ a: 1 }, []])).toEqual([{ a: 1 }]);
+  });
+
+  it("parses JSON-encoded object elements inside an object array", async () => {
+    expect(await jsonField([{ a: 1 }, '{"a":2}'])).toEqual([{ a: 1 }, { a: 2 }]);
+  });
+
+  it("drops null elements from a scalar array", async () => {
+    expect(await jsonField([1, null, 2])).toEqual([1, 2]);
+  });
+
   it("recursively sanitizes nested object values", async () => {
     const result = await jsonField({ scores: [1, 2, 3] });
     expect(result).toEqual({ scores: [1, 2, 3] });
