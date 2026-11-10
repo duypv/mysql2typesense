@@ -88,25 +88,26 @@ export class ConfigDrivenTransformer implements DocumentTransformer {
           return null;
         }
 
-        try {
-          // A JSON column can hold a JSON string whose text is itself an object.
+        const parsed = this.tryParseJson(trimmed);
+        if (parsed) {
+          // A JSON column can hold a JSON string whose text is itself an object/array.
           // mysql2 (initial sync) hands us that inner text while zongji (realtime)
-          // hands us the encoded string; unwrap it so both paths index an object.
-          const parsed = this.parseJsonObjectString(JSON.parse(trimmed));
-          return this.ensureJsonArray(this.sanitizeJsonForTypesense(parsed));
-        } catch {
-          // JSON parse failed — commonly legacy CSV text like "1,2,3".
-          // Split by comma and coerce individual items.
-          const items = trimmed
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean);
-
-          return items.map((s) => {
-            const n = Number(s);
-            return Number.isNaN(n) ? s : n;
-          });
+          // hands us the encoded string; unwrap it so both paths index the same shape.
+          const unwrapped = this.parseEmbeddedJson(parsed.value, true);
+          return this.ensureJsonArray(this.sanitizeJsonForTypesense(unwrapped));
         }
+
+        // JSON parse failed — commonly legacy CSV text like "1,2,3".
+        // Split by comma and coerce individual items.
+        const items = trimmed
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+
+        return items.map((s) => {
+          const n = Number(s);
+          return Number.isNaN(n) ? s : n;
+        });
       }
       case "csv":
         return Array.isArray(value)
@@ -227,7 +228,7 @@ export class ConfigDrivenTransformer implements DocumentTransformer {
       // drop/parse them first so e.g. [{...}, null] stays object[] instead of
       // becoming string[] and clashing with the schema inferred from other rows.
       const cleanedItems = sanitizedItems
-        .map((item) => this.parseJsonObjectString(item))
+        .map((item) => this.sanitizeJsonForTypesense(this.parseEmbeddedJson(item, false)))
         .filter((item) => item !== null && !(Array.isArray(item) && item.length === 0));
       if (new Set(cleanedItems.map((item) => this.jsonKind(item))).size <= 1) {
         return cleanedItems;
@@ -249,20 +250,39 @@ export class ConfigDrivenTransformer implements DocumentTransformer {
     return value;
   }
 
-  /** Parses a string element that holds a JSON object; anything else is returned as-is. */
-  private parseJsonObjectString(value: unknown): unknown {
-    if (typeof value !== "string" || !value.trim().startsWith("{")) {
+  /**
+   * Parses a string that holds a JSON object (or array, when `allowArray`);
+   * anything else is returned as-is.
+   */
+  private parseEmbeddedJson(value: unknown, allowArray: boolean): unknown {
+    if (typeof value !== "string") {
       return value;
     }
 
-    try {
-      const parsed: unknown = JSON.parse(value);
-      return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-        ? this.sanitizeJsonForTypesense(parsed)
-        : value;
-    } catch {
+    const head = value.trimStart()[0];
+    if (head !== "{" && !(allowArray && head === "[")) {
       return value;
     }
+
+    const parsed = this.tryParseJson(value.trim());
+    return parsed && typeof parsed.value === "object" && parsed.value !== null ? parsed.value : value;
+  }
+
+  /**
+   * JSON.parse that also accepts text hard-wrapped by whatever wrote it (line
+   * breaks plus indentation inserted mid-token). Raw line breaks are never valid
+   * inside JSON strings, so stripping them is only tried once a plain parse fails.
+   */
+  private tryParseJson(text: string): { value: unknown } | undefined {
+    for (const candidate of [text, text.replace(/\r?\n[ \t]*/g, "")]) {
+      try {
+        return { value: JSON.parse(candidate) };
+      } catch {
+        // try the next candidate
+      }
+    }
+
+    return undefined;
   }
 
   private jsonKind(value: unknown): string {

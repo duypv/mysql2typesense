@@ -243,6 +243,28 @@ describe("ConfigDrivenTransformer — json sourceFormat", () => {
     expect(await jsonField(inner)).toEqual(expected); // initial sync (mysql2)
   });
 
+  // Regression: RefundRequest 588 stored RefundDetails hard-wrapped every ~118
+  // chars ("Prescriptio\n  nDetailID"). Raw newlines inside JSON strings are
+  // invalid, so JSON.parse threw and the CSV fallback produced a string[].
+  it("parses JSON text hard-wrapped with line breaks inside tokens", async () => {
+    const wrapped = '[{"DetailID":null,"Prescriptio\n  nDetailID":994,"UnitPrice":10000.0},{"DetailI\n  D":null,"ServiceGroupID"\n  :null}]';
+    const expected = [
+      { DetailID: null, PrescriptionDetailID: 994, UnitPrice: 10000 },
+      { DetailID: null, ServiceGroupID: null }
+    ];
+    expect(await jsonField(wrapped)).toEqual(expected); // initial sync (mysql2)
+    expect(await jsonField(JSON.stringify(wrapped))).toEqual(expected); // realtime (zongji)
+  });
+
+  it("unwraps a double-encoded JSON array string the way initial sync sees it", async () => {
+    const inner = '[{"DrugID":147},{"DrugID":146}]';
+    expect(await jsonField(JSON.stringify(inner))).toEqual([{ DrugID: 147 }, { DrugID: 146 }]);
+  });
+
+  it("keeps the CSV fallback for non-JSON text", async () => {
+    expect(await jsonField("a,\n b")).toEqual(["a", "b"]);
+  });
+
   it("drops null elements from a scalar array", async () => {
     expect(await jsonField([1, null, 2])).toEqual([1, 2]);
   });
